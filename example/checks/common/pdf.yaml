@@ -1,0 +1,9 @@
+# Общие проверки для артефактов типа .pdf.
+# checks — добавляются в чек-лист каждого кейса этого типа (итог = checks
+# отсюда + checks из data/<case_id>.yaml).
+# universal — дефолтный чек-лист для `--validate` без `--case` и добавка при
+# полном прогоне (дедупликация по строке).
+# Формат проверки: kind/metric/user_phrase/text (см. data/GD-001.yaml).
+artifact_type: .pdf
+checks: []
+universal: []
