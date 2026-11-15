@@ -1,0 +1,16 @@
+id: sanity
+processor: pptx
+phase: common
+checks:
+- kind: functional
+  metric: Функциональные
+  user_phrase: false
+  handler: common/file_exists
+  text: |-
+    file_exists
+- kind: functional
+  metric: Функциональные
+  user_phrase: false
+  handler: common/file_renderable
+  text: |-
+    render_success

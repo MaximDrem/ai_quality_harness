@@ -166,8 +166,7 @@ _OFFICE_XML_TEXT_PARTS = {
 }
 
 
-def parse_artifact_text(artifact_path: str) -> str:
-    """Извлечь текст из офисного артефакта (pptx/docx/xlsx) для проверок."""
+def _parse_office_artifact_text(artifact_path: str) -> str:
     p = Path(artifact_path)
     if not p.exists() or not p.is_file():
         return ""
@@ -192,11 +191,20 @@ def parse_artifact_text(artifact_path: str) -> str:
     return ""
 
 
-def parse_artifacts_text(artifacts: Sequence[str]) -> str:
+def parse_artifact_text(artifact_path: str, processor: str = "") -> str:
+    from ..processors import get_processor
+
+    return get_processor(processor, artifact_path).extract_text(artifact_path)
+
+
+def parse_artifacts_text(artifacts: Sequence[str], processor: str = "", context=None) -> str:
     """Собрать текст из всех артефактов (для текстовой проверки)."""
     chunks: List[str] = []
     for a in artifacts:
-        t = parse_artifact_text(a)
+        if context is not None:
+            t = context.extract_text(a, processor)
+        else:
+            t = parse_artifact_text(a, processor=processor)
         if t.strip():
             chunks.append(f"--- {Path(a).name} ---\n{t}")
     return "\n\n".join(chunks)

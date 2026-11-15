@@ -1,33 +1,22 @@
-"""Обновление Sudir-куков (GIGACHAT_SESSION_COOKIES).
-
-Куки живут ~13 часов, после чего upstream перестаёт отдавать список моделей
-и агент падает с `Model not found: gigachat/...`. Здесь логинимся заново по
-кредам из `.env` и пишем свежую Cookie-строку в окружение и в `.env`.
-
-Импортирует `client.*` лениво: в чекауте без `client/` модуль недоступен,
-и харнесс продолжает работать с прежними куками (например, `--validate`).
-"""
 from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
+from typing import Optional
 
 from ..config import TEST_AGENT_ROOT
 
 
-def refresh_cookies() -> bool:
-    """Перелогиниться в СУДИР и обновить GIGACHAT_SESSION_COOKIES.
-
-    Возвращает True, если куки получены и записаны; при любой проблеме
-    оставляем прежние.
-    """
+def refresh_cookies(auth_mode: Optional[str] = None) -> bool:
+    mode = (auth_mode or os.environ.get("GIGATOOL_AUTH_MODE") or "ift").strip().lower()
+    if mode == "prod":
+        print("[cookies] prod: вход выполнит клиент через Electron", file=sys.stderr)
+        return False
     try:
-        from client.sudir_login import login, verify_session, write_cookies_env
-        from client.config import ClientConfig
-        import urllib.parse as _up
-    except Exception as e:  # noqa: BLE001
-        print(f"[cookies] модуль sudir_login недоступен: {e}", file=sys.stderr)
+        from client import ClientConfig
+        from client.auth.sudir import login, verify_session, write_cookies_env
+    except Exception as error:
+        print(f"[cookies] модуль Sudir недоступен: {error}", file=sys.stderr)
         return False
 
     username = os.environ.get("IFT_LOGIN_USER") or os.environ.get("IFT_LOGING")
@@ -36,33 +25,24 @@ def refresh_cookies() -> bool:
         print("[cookies] нет кред (IFT_LOGIN_USER/IFT_PASSWORD) — оставляю прежние куки", file=sys.stderr)
         return False
 
-    # Логинимся в origin того upstream, куда пойдёт прокси: куки host-only,
-    # сессия чужого стенда на API отдаёт 401 (выглядит как «Model not found»).
     try:
-        u = _up.urlsplit(ClientConfig().resolve().gigachat_upstream)
-        base = f"{u.scheme}://{u.netloc}"
-    except Exception:  # noqa: BLE001
-        base = None
-
-    try:
+        base = ClientConfig(auth_mode=mode).resolve().shared_api_origin
         header = login(username, password, base_url=base)
-    except Exception as e:  # noqa: BLE001
-        print(f"[cookies] Sudir-логин не удался: {e} — оставляю прежние куки", file=sys.stderr)
+    except Exception as error:
+        print(f"[cookies] Sudir-логин не удался: {error} — оставляю прежние куки", file=sys.stderr)
         return False
     if not header:
-        print("[cookies] логин не вернул куки — оставляю прежние", file=sys.stderr)
+        print("[cookies] Sudir-логин не вернул куки — оставляю прежние", file=sys.stderr)
         return False
-
-    st = verify_session(header, base_url=base)
-    if st != 200:
-        print(f"[cookies] session-check -> {st}, куки невалидны — оставляю прежние", file=sys.stderr)
+    status = verify_session(header, base_url=base)
+    if status != 200:
+        print(f"[cookies] session-check -> {status}, куки невалидны — оставляю прежние", file=sys.stderr)
         return False
 
     os.environ["GIGACHAT_SESSION_COOKIES"] = header
-    # Пишем в `.env`, чтобы свежие куки видел и клиент вне пайплайна.
     try:
         write_cookies_env(str(TEST_AGENT_ROOT / ".env"), header)
-    except Exception as e:  # noqa: BLE001
-        print(f"[cookies] не удалось записать .env: {e}", file=sys.stderr)
+    except Exception as error:
+        print(f"[cookies] не удалось записать .env: {error}", file=sys.stderr)
     print("[cookies] Sudir-куки обновлены")
     return True

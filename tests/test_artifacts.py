@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+from example.artifacts import ArtifactCollector, validation_context
+from example.evaluate import _missing_artifact_results
+from example.judge.extract import parse_artifact_text
+from example.checks.functional.common.file_renderable import run as file_renderable
+from example.models import ArtifactContext, ArtifactSpec, AttachmentSpec, Check, CollectedArtifact, TestCase
+
+
+def write_event(path: Path):
+    tool_call = SimpleNamespace(
+        state="completed",
+        tool="write",
+        input={"filePath": str(path)},
+        output="",
+    )
+    return SimpleNamespace(tool_calls=[tool_call], artifacts=[], text_outputs=[])
+
+
+class ArtifactTests(unittest.TestCase):
+    def test_intermediate_versions_and_roles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "work"
+            work.mkdir()
+            source = root / "source.pptx"
+            source.write_bytes(b"source")
+            intermediate = work / "analysis.md"
+            final = work / "result.pptx"
+            case = TestCase(
+                id="style",
+                user_phrase="test",
+                skill="presentation_style",
+                artifact_type=".pptx",
+                case_dir=str(root),
+                attachments=[AttachmentSpec(path="source.pptx", name="template")],
+                artifacts=[
+                    ArtifactSpec(name="analysis", artifact_type=".md", stage="intermediate"),
+                    ArtifactSpec(name="result", artifact_type=".pptx", stage="final"),
+                ],
+            )
+            collector = ArtifactCollector(case, work, root / "snapshots")
+            result = SimpleNamespace(artifacts=[])
+
+            intermediate.write_text("version 1", encoding="utf-8")
+            collector.capture_event(write_event(intermediate), 1)
+            self.assertFalse(collector.has_final(result, []))
+            intermediate.write_text("version 2", encoding="utf-8")
+            collector.capture_event(write_event(intermediate), 2)
+            final.write_bytes(b"final")
+            self.assertTrue(collector.has_final(result, []))
+
+            context = collector.finalize(result, [])
+            snapshots = context.select(["analysis"])
+            self.assertEqual(len(snapshots), 2)
+            self.assertEqual([Path(item.path).read_text(encoding="utf-8") for item in snapshots], ["version 1", "version 2"])
+            self.assertEqual(context.paths(["template"]), [str(source)])
+            self.assertEqual(context.paths(["final"]), [str(final)])
+            self.assertEqual(context.paths(["intermediate"]), [item.path for item in snapshots])
+
+    def test_required_artifact_has_explicit_failure(self):
+        case = TestCase(
+            id="research",
+            user_phrase="test",
+            skill="deep_research",
+            artifact_type=".md",
+        )
+        collector = ArtifactCollector(case, Path("/tmp"), Path("/tmp/snapshots"))
+        context = collector.finalize(SimpleNamespace(artifacts=[]), [])
+        missing = _missing_artifact_results(case, context)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("final", missing[0].reason)
+
+    def test_validation_context_and_plain_text_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.pptx"
+            source.write_bytes(b"source")
+            result = root / "result.md"
+            result.write_text("# Research\nText", encoding="utf-8")
+            case = TestCase(
+                id="research",
+                user_phrase="test",
+                skill="deep_research",
+                artifact_type=".md",
+                case_dir=str(root),
+                attachments=[AttachmentSpec(path="source.pptx", name="source")],
+            )
+            context = validation_context(case, str(result))
+            self.assertEqual(context.paths(["source"]), [str(source)])
+            self.assertEqual(context.paths(["final"]), [str(result)])
+            self.assertIn("# Research", parse_artifact_text(str(result)))
+
+
+    def test_all_required_finals_are_needed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            case = TestCase(
+                id="multi",
+                user_phrase="test",
+                skill="demo",
+                artifact_type=".pptx",
+                artifacts=[
+                    ArtifactSpec(name="report", artifact_type=".md"),
+                    ArtifactSpec(name="deck", artifact_type=".pptx"),
+                ],
+            )
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            result = SimpleNamespace(artifacts=[])
+            (work / "report.md").write_text("report", encoding="utf-8")
+            self.assertFalse(collector.has_final(result, []))
+            (work / "deck.pptx").write_bytes(b"deck")
+            self.assertTrue(collector.has_final(result, []))
+
+    def test_same_basename_snapshots_do_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / "a").mkdir()
+            (work / "b").mkdir()
+            first = work / "a" / "report.md"
+            second = work / "b" / "report.md"
+            first.write_text("first", encoding="utf-8")
+            second.write_text("second", encoding="utf-8")
+            case = TestCase(
+                id="snapshots",
+                user_phrase="test",
+                skill="demo",
+                artifact_type=".md",
+                artifacts=[ArtifactSpec(name="report", artifact_type=".md", stage="intermediate")],
+            )
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            event = SimpleNamespace(
+                tool_calls=[
+                    SimpleNamespace(state="completed", tool="write", input={"filePath": str(first)}, output=""),
+                    SimpleNamespace(state="completed", tool="write", input={"filePath": str(second)}, output=""),
+                ],
+                artifacts=[],
+                text_outputs=[],
+            )
+            collector.capture_event(event, 1)
+            self.assertEqual(len(collector.intermediate), 2)
+            self.assertEqual(
+                sorted(Path(item.path).read_text(encoding="utf-8") for item in collector.intermediate),
+                ["first", "second"],
+            )
+            self.assertEqual(len({item.path for item in collector.intermediate}), 2)
+
+    def test_ambiguous_final_declaration_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            path = work / "result.pptx"
+            path.write_bytes(b"deck")
+            case = TestCase(
+                id="ambiguous",
+                user_phrase="test",
+                skill="demo",
+                artifact_type=".pptx",
+                artifacts=[
+                    ArtifactSpec(name="generic", artifact_type=".pptx"),
+                    ArtifactSpec(name="specific", artifact_type=".pptx", path="result.pptx"),
+                ],
+            )
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            with self.assertRaisesRegex(ValueError, "одновременно"):
+                collector.finalize(SimpleNamespace(artifacts=[]), [])
+
+    def test_glob_only_custom_extension_is_discovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            path = work / "result.yaml"
+            path.write_text("result", encoding="utf-8")
+            case = TestCase(
+                id="custom",
+                user_phrase="test",
+                skill="demo",
+                artifact_type="",
+                processor="text",
+                artifacts=[ArtifactSpec(name="config", path="result.yaml")],
+            )
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            context = collector.finalize(SimpleNamespace(artifacts=[]), [])
+            self.assertEqual(context.paths(["config"]), [str(path)])
+            self.assertEqual(context.select(["config"])[0].processor, "text")
+
+    def test_validation_requires_existing_matching_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = TestCase(
+                id="multi",
+                user_phrase="test",
+                skill="demo",
+                artifact_type=".pptx",
+                artifacts=[
+                    ArtifactSpec(name="first", artifact_type=".pptx", path="first.pptx"),
+                    ArtifactSpec(name="second", artifact_type=".pptx", path="second.pptx"),
+                ],
+            )
+            with self.assertRaises(FileNotFoundError):
+                validation_context(case, str(root / "missing.pptx"))
+            second = root / "second.pptx"
+            second.write_bytes(b"second")
+            context = validation_context(case, str(second))
+            self.assertEqual(context.paths(["second"]), [str(second)])
+            self.assertEqual(context.paths(["first"]), [])
+
+    def test_custom_intermediate_is_found_by_filesystem_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            result = work / "analysis.custom"
+            result.write_text("analysis", encoding="utf-8")
+            case = TestCase(
+                id="custom",
+                user_phrase="test",
+                skill="demo",
+                artifact_type="",
+                artifacts=[ArtifactSpec(name="analysis", path="analysis.custom", stage="intermediate")],
+            )
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            event = SimpleNamespace(tool_calls=[], artifacts=[], text_outputs=[])
+            collector.capture_event(event, 1)
+            self.assertEqual(len(collector.intermediate), 1)
+            self.assertEqual(Path(collector.intermediate[0].path).read_text(encoding="utf-8"), "analysis")
+
+    def test_validation_supports_nested_declared_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = root / "output" / "result.md"
+            result.parent.mkdir()
+            result.write_text("result", encoding="utf-8")
+            case = TestCase(
+                id="nested",
+                user_phrase="test",
+                skill="demo",
+                artifact_type="",
+                artifacts=[ArtifactSpec(name="report", path="output/result.md")],
+            )
+            context = validation_context(case, str(result))
+            self.assertEqual(context.paths(["report"]), [str(result)])
+
+    def test_renderable_checks_every_selected_artifact(self):
+        first = CollectedArtifact(path="/tmp/first.pptx", role="final", name="first")
+        second = CollectedArtifact(path="/tmp/second.pptx", role="final", name="second")
+        context = ArtifactContext(
+            items=[first, second],
+            photos={first.path: ["page-1.png"], second.path: []},
+        )
+        result = file_renderable(Check(text="render", kind="functional"), [first.path, second.path], [], context=context)
+        self.assertFalse(result.success)
+        self.assertIn("second.pptx", result.reason)
+
+
+if __name__ == "__main__":
+    unittest.main()

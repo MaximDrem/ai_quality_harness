@@ -1,62 +1,60 @@
-"""Прогон тест-кейсов против headless-бэкенда GigaCat.
-
-    PYTHONPATH=. python3 -m example.run_test_agent [--id GD-001] [--validate file.pptx]
-"""
 from __future__ import annotations
 
 import argparse
 import asyncio
 import collections
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from tqdm import tqdm
+
 from .agent.cookies import refresh_cookies
 from .agent.session import run_case
-from .cases import load_test_cases, makedirs
+from .cases import DEFAULT_SCENARIO, available_scenarios, load_test_cases, makedirs
 from .config import RUNS_DIR, SEMAPHORE_LIMIT, WORK_DIRS_DIR, load_dotenv
 from .evaluate import case_for_validate, list_models, validate_artifact, with_universal_checks
 from .models import RunResult
 from .report import write_results_xlsx
-from tqdm import tqdm
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--id", default=None, help="фильтр по id кейса (по умолчанию — все из data/*.yaml)")
-    p.add_argument("--model", default=None, help="модель в формате provider/model, напр. gigachat/Qwen3.5-397b (env: GIGATOOL_MODEL)")
-    p.add_argument("--list-models", action="store_true", help="показать доступные модели и выйти")
-    p.add_argument("--validate", default=None,
-                   help="проверить ГОТОВЫЙ артефакт (pptx/docx/xlsx) без запуска агента, напр. work_dirs/example/slides.pptx")
-    p.add_argument("--case", default=None,
-                   help="id тест-кейса, чей check_list использовать для --validate (по умолчанию presentation для .pptx)")
-    p.add_argument("--checks", default=None,
-                   help="для --validate: многострочный список text-проверок (по одной на строку), переопределяющий чек-лист кейса")
-    p.add_argument("--runs", type=int, default=1, help="количество прогонов одного датасета")
-    return p.parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--id", default=None, help="фильтр по id кейса")
+    parser.add_argument("--scenario", default=None, help=f"сценарий из example/data (по умолчанию {DEFAULT_SCENARIO})")
+    parser.add_argument("--list-scenarios", action="store_true", help="показать автоматически найденные сценарии")
+    parser.add_argument("--model", default=None, help="модель OpenCode provider/model")
+    parser.add_argument("--auth-mode", choices=("ift", "prod", "cert"), default=None)
+    parser.add_argument("--skills-dir", default=None, help="OPENCODE_CONFIG_DIR с skills/, agent/ и настройками")
+    parser.add_argument("--list-models", action="store_true", help="показать доступные модели и выйти")
+    parser.add_argument("--validate", default=None, help="проверить готовый артефакт без запуска агента")
+    parser.add_argument("--case", default=None, help="id кейса, чей чек-лист использовать для --validate")
+    parser.add_argument("--checks", default=None, help="text-проверки для --validate, по одной на строку")
+    parser.add_argument("--runs", type=int, default=1, help="количество прогонов набора")
+    return parser.parse_args(argv)
 
 
-def print_metrics_summary(rr: RunResult) -> None:
-    """Напечатать "метрика: passed/total" по всем проверкам кейса.
+def model_slug(model: str) -> str:
+    name = str(model or "default").strip().rsplit("/", 1)[-1]
+    slug = re.sub(r"[^A-Za-z0-9._]+", "_", name).strip("._")
+    return slug or "default"
 
-    Проверки без метрики группируются под "—", ошибки судьи не считаются
-    и выводятся отдельной строкой.
-    """
-    # Метрика -> [пройдено, всего]; порядок входа сохраняем для вывода.
-    agg: Dict[str, List[int]] = collections.OrderedDict()
+
+def print_metrics_summary(result: RunResult) -> None:
+    aggregated: Dict[str, List[int]] = collections.OrderedDict()
     errors = 0
-    for cr in rr.check_results:
-        if cr.error:
+    for check_result in result.check_results:
+        if check_result.error:
             errors += 1
             continue
-        key = cr.check.metric or "—"
-        agg.setdefault(key, [0, 0])
-        agg[key][1] += 1
-        if cr.success:
-            agg[key][0] += 1
-
-    for metric, (passed, total) in agg.items():
+        key = check_result.check.metric or "—"
+        aggregated.setdefault(key, [0, 0])
+        aggregated[key][1] += 1
+        if check_result.success:
+            aggregated[key][0] += 1
+    for metric, (passed, total) in aggregated.items():
         flag = "OK " if passed == total and total else "!! "
         print(f"    {flag}[{metric}] {passed}/{total}")
     if errors:
@@ -64,101 +62,108 @@ def print_metrics_summary(rr: RunResult) -> None:
 
 
 async def _validate_mode(args: argparse.Namespace, runs_root: Path) -> int:
-    """Проверить готовый файл без агента: рендер + проверки + отчёт."""
-    case = case_for_validate(args.validate, args.case, args.checks)
+    case = case_for_validate(args.validate, args.case, args.checks, scenario=args.scenario)
     print(f"[validate:{case.id}] файл={args.validate}")
-    rr = await validate_artifact(case, args.validate, runs_root)
-    result_xlsx = write_results_xlsx([rr], runs_root / "run_1" / case.id / "result.xlsx")
-    rr.judge_xlsx = result_xlsx
-
-    passed = [c for c in rr.check_results if c.success]
-    errored = [c for c in rr.check_results if not c.success and c.error]
-    failed = [c for c in rr.check_results if not c.success and not c.error]
-    # Ошибки судьи — не вердикт по колоде, печатаем отдельно.
-    print(f"[validate:{case.id}] прошло {len(passed)}/{len(rr.check_results) - len(errored)}"
+    result = await validate_artifact(case, args.validate, runs_root)
+    result_xlsx = write_results_xlsx([result], runs_root / "run_1" / case.id / "result.xlsx")
+    result.judge_xlsx = result_xlsx
+    passed = [item for item in result.check_results if item.success]
+    errored = [item for item in result.check_results if not item.success and item.error]
+    failed = [item for item in result.check_results if not item.success and not item.error]
+    print(f"[validate:{case.id}] прошло {len(passed)}/{len(result.check_results) - len(errored)}"
           f" (ошибок судьи: {len(errored)}); результат: {result_xlsx}")
-    for c in failed:
-        print(f"  [FAIL] {c.check.text}\n         {c.reason}")
-    for c in errored:
-        print(f"  [ERROR] {c.check.text}\n          {c.reason}")
-    for c in passed:
-        print(f"  [PASS] {c.check.text}")
+    for item in failed:
+        print(f"  [FAIL] {item.check.text}\n         {item.reason}")
+    for item in errored:
+        print(f"  [ERROR] {item.check.text}\n         {item.reason}")
+    for item in passed:
+        print(f"  [PASS] {item.check.text}")
     print(f"[validate:{case.id}] метрики:")
-    print_metrics_summary(rr)
+    print_metrics_summary(result)
     return 0 if not failed else 1
 
 
 async def _full_run_mode(args: argparse.Namespace, runs_root: Path) -> int:
-    """Прогнать тест-кейсы против агента и собрать общий отчёт."""
-    cases = load_test_cases()
+    cases = load_test_cases(scenario=args.scenario)
     if args.id:
-        cases = [c for c in cases if c.id == args.id]
-    cases = [with_universal_checks(c) for c in cases]
+        cases = [case for case in cases if case.id == args.id]
+    cases = [with_universal_checks(case) for case in cases]
     if not cases:
         print("нет тест-кейсов для запуска", file=sys.stderr)
         return 1
-
-    if args.model:  # None — дефолт AgentSession
+    if args.model:
         print(f"[run] model={args.model}")
 
     makedirs(runs_root, WORK_DIRS_DIR)
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
-
     results: List[RunResult] = []
-    success = 0
     total_work = len(cases) * max(1, args.runs)
-    with tqdm(total=total_work, unit="кейс", desc="прогон кейсов") as pbar:
-        for i in range(1, args.runs + 1):
+    success = 0
+    with tqdm(total=total_work, unit="кейс", desc="прогон кейсов") as progress:
+        for run_num in range(1, args.runs + 1):
             for case in cases:
-                pbar.set_description(f"run {i}/{args.runs}: {case.id}")
+                progress.set_description(f"run {run_num}/{args.runs}: {case.id}")
                 try:
-                    rr = await run_case(case, runs_root, semaphore, model=args.model, run_num=i)
-                    rr.run = i
-                    results.append(rr)
+                    result = await run_case(
+                        case,
+                        runs_root,
+                        semaphore,
+                        model=args.model,
+                        run_num=run_num,
+                        auth_mode=args.auth_mode,
+                        skills_dir=args.skills_dir,
+                    )
+                    result.run = run_num
+                    results.append(result)
                     success += 1
-                except Exception as e:  # не прерываем остальные кейсы
-                    print(f"[run:{case.id}] FAILED: {e}", file=sys.stderr)
-                pbar.update(1)
+                except Exception as error:
+                    print(f"[run:{case.id}] FAILED: {error}", file=sys.stderr)
+                progress.update(1)
 
-    # Общий xlsx по всем кейсам.
     if results:
         result_xlsx = write_results_xlsx(results, runs_root / "results.xlsx")
-        for rr in results:
-            rr.judge_xlsx = result_xlsx
+        for result in results:
+            result.judge_xlsx = result_xlsx
         print(f"[run] result_xlsx={result_xlsx}")
-
-    # Сводка по метрикам на каждый кейс.
     print("метрики по кейсам:")
-    for rr in results:
-        print(f"  [{rr.test_case.id}] (run {rr.run})")
-        print_metrics_summary(rr)
+    for result in results:
+        print(f"  [{result.test_case.id}] (run {result.run})")
+        print_metrics_summary(result)
+    print(f"done: {success}/{total_work}")
+    return 0 if success == total_work else 1
 
-    print(f"done: {success}/{len(cases)}")
-    return 0 if success == len(cases) else 1
+
+def _effective_model(args: argparse.Namespace) -> str:
+    if args.model:
+        return args.model
+    from client import ClientConfig
+
+    kwargs = {"auth_mode": args.auth_mode} if args.auth_mode else {}
+    return ClientConfig(**kwargs).resolve().model
 
 
 async def main(argv: Optional[List[str]] = None) -> int:
-    load_dotenv()
-
-    # Куки протухают за ~13 ч — обновляем на каждый прогон.
-    refresh_cookies()
-
     args = _parse_args(argv)
-
-    if args.list_models:
-        print("Модели (provider/model):")
-        for m in list_models():
-            print(f"  {m}")
+    if args.list_scenarios:
+        for scenario in available_scenarios():
+            print(scenario)
         return 0
 
-    print(f"Количество прогонов: {args.runs}")
+    load_dotenv()
+    if args.list_models:
+        refresh_cookies(args.auth_mode)
+        print("Модели (provider/model):")
+        for model in list_models(auth_mode=args.auth_mode, skills_dir=args.skills_dir):
+            print(f"  {model}")
+        return 0
 
-    # Каждый запуск пишет в runs/yyyy-mm-dd_hh-mm/.
-    runs_root = RUNS_DIR / datetime.now().strftime("%Y-%m-%d_%H-%M")
-
-    # Проверка готового файла без агента.
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     if args.validate:
-        return await _validate_mode(args, runs_root)
+        return await _validate_mode(args, RUNS_DIR / stamp)
+
+    model = _effective_model(args)
+    refresh_cookies(args.auth_mode)
+    runs_root = RUNS_DIR / f"{stamp}_{model_slug(model)}"
     return await _full_run_mode(args, runs_root)
 
 

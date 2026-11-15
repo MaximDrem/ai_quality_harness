@@ -1,42 +1,95 @@
-"""Функциональные проверки артефактов, считаемые кодом (без судьи-LLM).
-
-Каждая проверка — скрипт `<имя>.py` с интерфейсом
-`run(check, artifacts, photos, user_phrase) -> CheckResult`; реестр — `_HANDLERS`.
-"""
 from __future__ import annotations
 
+import functools
+import importlib.util
+import inspect
+import sys
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from ...models import Check, CheckResult, TestCase
-from . import (
-    content_variety,
-    empty_text_frame,
-    escaped_newlines,
-    file_exists,
-    file_renderable,
-    font_variety,
-    image_coverage,
-    repeated_words,
-    shape_density,
-    slide_count,
-    slide_fullness,
-    spelling,
-    style_consistency,
-    text_background_contrast,
-    text_hierarchy,
-)
+from ...models import ArtifactContext, Check, CheckResult, TestCase
 from ._helpers import unavailable
 
-_RENDER_KEYWORDS = ("рендери", "открыва", "фото", "render", "страниц")
+_ROOT = Path(__file__).resolve().parent
+_ALIASES = {
+    "file_opens": "file_renderable",
+    "render": "file_renderable",
+    "render_success": "file_renderable",
+}
 
 
-def run_functional_checks(case: TestCase, artifacts: List[str], photos: List[str]) -> List[CheckResult]:
-    """Все функциональные проверки кейса из его чек-листа."""
+@functools.lru_cache(maxsize=1)
+def _handler_index() -> Dict[str, Path]:
+    index: Dict[str, Path] = {}
+    stems: Dict[str, Path] = {}
+    ambiguous = set()
+    for path in _ROOT.rglob("*.py"):
+        if path.name.startswith("_") or path.name == "processor.py" or path == Path(__file__):
+            continue
+        relative = path.relative_to(_ROOT).with_suffix("").as_posix()
+        index[relative] = path
+        if path.stem in ambiguous:
+            continue
+        if path.stem in stems and stems[path.stem] != path:
+            index.pop(path.stem, None)
+            ambiguous.add(path.stem)
+            continue
+        stems[path.stem] = path
+        index[path.stem] = path
+    return index
+
+
+def clear_handler_cache() -> None:
+    _handler_index.cache_clear()
+
+
+def _load_handler(name: str) -> Callable:
+    normalized = name.strip().replace("\\", "/").removesuffix(".py")
+    normalized = _ALIASES.get(normalized, normalized)
+    paths = _handler_index()
+    path = paths.get(normalized)
+    if path is None:
+        raise ModuleNotFoundError(f"Функциональная проверка не найдена: {normalized}")
+    relative = path.relative_to(_ROOT).with_suffix("").as_posix()
+    module_name = "example.checks.functional." + relative.replace("/", ".")
+    if module_name in sys.modules:
+        module = sys.modules[module_name]
+    else:
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Не удалось загрузить проверку: {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    handler = getattr(module, "run", None)
+    if not callable(handler):
+        raise TypeError(f"В модуле {path} нет callable run(...)")
+    return handler
+
+
+def _selected_inputs(
+    check: Check,
+    artifacts: List[str],
+    photos: List[str],
+    context: Optional[ArtifactContext],
+) -> tuple[List[str], List[str]]:
+    if context is None:
+        return artifacts, photos
+    selected = context.paths(check.artifacts or ["final"])
+    return selected, context.photos_for(selected)
+
+
+def run_functional_checks(
+    case: TestCase,
+    artifacts: List[str],
+    photos: List[str],
+    context: Optional[ArtifactContext] = None,
+) -> List[CheckResult]:
     results: List[CheckResult] = []
     for check in case.check_list:
-        if check.kind == "functional":
-            user_phrase = case.user_phrase if check.use_user_phrase else None
-            results.append(run_functional_check(check, artifacts, photos, user_phrase))
+        if check.kind != "functional":
+            continue
+        results.append(run_functional_check(check, artifacts, photos, case.user_phrase, context))
     return results
 
 
@@ -45,59 +98,22 @@ def run_functional_check(
     artifacts: List[str],
     photos: List[str],
     user_phrase: Optional[str] = None,
+    context: Optional[ArtifactContext] = None,
 ) -> CheckResult:
-    """Маршрутизатор: по имени проверки выбрать хэндлер из `_HANDLERS`."""
-    name = (check.text or "").strip().lower()
-    handler = _pick_handler(name)
-    return handler(check, artifacts, photos, user_phrase)
-
-
-def _pick_handler(name: str) -> Callable:
-    if name in _HANDLERS:
-        return _HANDLERS[name]
-    # Проверка с параметром: «slide_count 7» -> «slide_count».
-    head = name.split(None, 1)[0] if name else ""
-    if head in _HANDLERS:
-        return _HANDLERS[head]
-    if any(k in name for k in _RENDER_KEYWORDS):
-        return file_renderable.run
-    return check_not_implemented
-
-
-def check_not_implemented(
-    check: Check,
-    artifacts: List[str],
-    photos: List[str],
-    user_phrase: Optional[str] = None,
-) -> CheckResult:
-    """Неизвестная функциональная проверка — сообщаем, что не реализована."""
-    name = (check.text or "").strip()
-    return unavailable(
-        check,
-        f"Функциональная проверка не реализована в коде: {name!r}",
-        artifacts, photos, user_phrase,
-    )
-
-
-# Реестр проверок: имя -> run(...) скрипта <имя>.py. Синонимы указывают на
-# тот же скрипт.
-_HANDLERS: Dict[str, Callable] = {
-    "file_exists": file_exists.run,
-    "file_renderable": file_renderable.run,
-    "file_opens": file_renderable.run,
-    "render": file_renderable.run,
-    "render_success": file_renderable.run,
-    "empty_text_frame": empty_text_frame.run,
-    "text_background_contrast": text_background_contrast.run,
-    "style_consistency": style_consistency.run,
-    "slide_count": slide_count.run,
-    "repeated_words": repeated_words.run,
-    "escaped_newlines": escaped_newlines.run,
-    "image_coverage": image_coverage.run,
-    "font_variety": font_variety.run,
-    "slide_fullness": slide_fullness.run,
-    "content_variety": content_variety.run,
-    "shape_density": shape_density.run,
-    "text_hierarchy": text_hierarchy.run,
-    "spelling": spelling.run,
-}
+    selected_artifacts, selected_photos = _selected_inputs(check, artifacts, photos, context)
+    phrase = user_phrase if check.use_user_phrase else None
+    name = check.handler or (check.text or "").strip().split(None, 1)[0]
+    try:
+        handler = _load_handler(name)
+    except (ImportError, TypeError, ValueError) as error:
+        return unavailable(
+            check,
+            f"Функциональная проверка {name!r} недоступна: {error}",
+            selected_artifacts,
+            selected_photos,
+            phrase,
+        )
+    kwargs = {}
+    if "context" in inspect.signature(handler).parameters:
+        kwargs["context"] = context
+    return handler(check, selected_artifacts, selected_photos, phrase, **kwargs)

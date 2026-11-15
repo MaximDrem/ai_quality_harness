@@ -12,7 +12,7 @@ import re
 from typing import List, Optional, Tuple
 
 from ..config import JUDGE_TEXT_MAX_CHARS
-from ..models import Check, CheckResult, TestCase
+from ..models import ArtifactContext, Check, CheckResult, TestCase
 from .client import JUDGE_MAX_CONCURRENCY, judge_images, judge_text
 from .extract import parse_artifacts_text
 
@@ -162,9 +162,10 @@ async def _judge_text(
     user_instruction: Optional[str],
     artifacts: List[str],
     semaphore: asyncio.Semaphore,
+    context: Optional[ArtifactContext] = None,
 ) -> CheckResult:
     """Текстовая проверка по распарсенному тексту артефактов."""
-    text = parse_artifacts_text(artifacts)
+    text = parse_artifacts_text(artifacts, processor=check.processor, context=context)
     if not text.strip():
         return CheckResult(
             check=check,
@@ -197,20 +198,29 @@ async def _judge_one(
     artifacts: List[str],
     photos: List[str],
     semaphore: asyncio.Semaphore,
+    context: Optional[ArtifactContext] = None,
 ) -> CheckResult:
     """Выполнить одну проверку (text|vlm) через судью-LLM."""
     try:
         # user_phrase передаётся судье только если это разрешено полем
         # user_phrase проверки.
         user_instruction = case.user_phrase if check.use_user_phrase else None
+        if context is not None:
+            artifacts = context.paths(check.artifacts or ["final"])
+            photos = context.photos_for(artifacts)
         if check.kind == "vlm":
             return await _judge_vlm(check, user_instruction, photos, semaphore)
-        return await _judge_text(check, user_instruction, artifacts, semaphore)
+        return await _judge_text(check, user_instruction, artifacts, semaphore, context)
     except Exception as e:  # судья упал — не валим кейс
         return _judger_error_result(check, f"ошибка судьи: {e}")
 
 
-async def run_judge(case: TestCase, artifacts: List[str], photos: List[str]) -> List[CheckResult]:
+async def run_judge(
+    case: TestCase,
+    artifacts: List[str],
+    photos: List[str],
+    context: Optional[ArtifactContext] = None,
+) -> List[CheckResult]:
     """Прогнать text/vlm-проверки чек-листа кейса через судью-LLM.
 
     `functional`-проверки сюда не попадают — их считает код
@@ -222,5 +232,5 @@ async def run_judge(case: TestCase, artifacts: List[str], photos: List[str]) -> 
 
     semaphore = asyncio.Semaphore(JUDGE_MAX_CONCURRENCY)
     return await asyncio.gather(
-        *(_judge_one(c, case, artifacts, photos, semaphore) for c in checks)
+        *(_judge_one(c, case, artifacts, photos, semaphore, context) for c in checks)
     )

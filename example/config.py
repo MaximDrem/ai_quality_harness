@@ -15,15 +15,15 @@ from pathlib import Path
 EXAMPLE_DIR = Path(__file__).resolve().parent
 TEST_AGENT_ROOT = EXAMPLE_DIR.parent
 
-# Результаты прогонов: runs/<yyyy-mm-dd_hh-mm>/run_<n>/<case_id>/.
+# Результаты прогонов: runs/<yyyy-mm-dd_hh-mm>_<model>/run_<n>/<case_id>/.
 RUNS_DIR = TEST_AGENT_ROOT / "runs"
 
 # Рабочие каталоги агентов вне дерева результатов.
 WORK_DIRS_DIR = TEST_AGENT_ROOT / "work_dirs"
 
-# Входные данные: тест-кейсы и общие проверки по типу артефакта.
+# Входные данные: тест-кейсы и отдельно описанные группы метрик.
 CASES_DIR = EXAMPLE_DIR / "data"
-COMMON_CHECKS_DIR = EXAMPLE_DIR / "checks" / "common"
+METRICS_DIR = EXAMPLE_DIR / "checks" / "metrics"
 
 # Общий конфиг wsc, с которым работает desktop (~/.wsc). Headless
 # поднимается так же, как `bun run dev:desktop`; справочный путь.

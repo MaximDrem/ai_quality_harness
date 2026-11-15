@@ -1,0 +1,22 @@
+id: text
+processor: pptx
+phase: universal
+checks:
+- kind: functional
+  metric: Текст
+  user_phrase: false
+  handler: text/repeated_words
+  text: |-
+    repeated_words
+- kind: functional
+  metric: Текст
+  user_phrase: false
+  handler: text/escaped_newlines
+  text: |-
+    escaped_newlines
+- kind: functional
+  metric: Текст
+  user_phrase: false
+  handler: text/spelling
+  text: |-
+    spelling

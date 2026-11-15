@@ -14,8 +14,7 @@ from typing import Dict, List
 ARTIFACT_EXTS = {".pptx", ".pdf", ".docx", ".xlsx", ".md", ".json", ".csv", ".png", ".jpg", ".svg", ".html"}
 
 # Путь/имя файла артефакта в тексте вывода тула.
-_ARTIFACT_FILE_RE = re.compile(
-    r"[\w./~-]+\.(?:pptx|pdf|docx|xlsx|md|json|csv|png|jpg|svg|html)")
+_ARTIFACT_FILE_RE = re.compile(r"[\w./~@-]+\.[A-Za-z0-9]+", re.IGNORECASE)
 
 
 def collect_skills_tools(events: list) -> tuple[List[str], List[str]]:
@@ -51,6 +50,23 @@ def collect_skills_tools(events: list) -> tuple[List[str], List[str]]:
             elif tc.is_skill:
                 _push(raw_tool, skills)
     return skills, tools
+
+
+def paths_from_text(text: str) -> List[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+    return [item.strip() for item in _ARTIFACT_FILE_RE.findall(text)]
+
+
+def paths_from_tool_input(tc) -> List[str]:
+    if (tc.tool or "") not in ("write", "edit") or not isinstance(tc.input, dict):
+        return []
+    result = []
+    for key in ("filePath", "path", "filename"):
+        value = tc.input.get(key)
+        if isinstance(value, str) and value.strip():
+            result.append(value.strip())
+    return result
 
 
 def paths_from_tool_output(tc) -> List[str]:

@@ -203,6 +203,7 @@ def write_case_log(
     agent_time_sec: float = 0.0,
     tokens=None,
     continuations: int = 0,
+    artifact_context=None,
 ) -> None:
     """Сводный лог кейса: check_list, скилы/тулы/артефакты, фото, вопросы,
     метрики и счётчик «Продолжить». `artifacts` — абсолютные пути.
@@ -232,6 +233,14 @@ def write_case_log(
             f.write(f"{a}\n")
         if not artifacts:
             f.write("(none)\n")
+
+        if artifact_context is not None:
+            f.write("\n# Artifact versions and roles\n")
+            for item in artifact_context.items:
+                f.write(
+                    f"role={item.role} name={item.name} path={item.path} "
+                    f"origin={item.origin_path} event={item.event_index}\n"
+                )
 
         f.write("\n# Render photos (for LLM check)\n")
         for ph in render_photos:
