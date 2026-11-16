@@ -4,20 +4,20 @@
 
 ## 1. Из чего состоит сценарий
 
-Для сценария `presentation_style`:
+Для сценария `sample_scenario`:
 
 ```text
 example/
-  data/presentation_style/
-    STYLE-001.yaml
+  data/sample_scenario/
+    SAMPLE-001.yaml
     assets/
       source.pptx
 
   checks/
-    metrics/presentation_style/
+    metrics/sample_scenario/
       extracted_elements.yaml
 
-    functional/presentation_style/
+    functional/sample_domain/
       extracted_elements.py
 ```
 
@@ -31,7 +31,7 @@ example/
 
 ```bash
 PYTHONPATH=. python3.12 -m example.run_test_agent \
-  --scenario presentation_style --id STYLE-001 --runs 1
+  --scenario sample_scenario --id SAMPLE-001 --runs 1
 ```
 
 ## 2. YAML тест-кейса
@@ -39,10 +39,10 @@ PYTHONPATH=. python3.12 -m example.run_test_agent \
 Минимальный кейс с одним финальным файлом:
 
 ```yaml
-id: DR-001
+id: SAMPLE-001
 user_phrase: |-
   Проведи исследование и сохрани отчёт.
-skill: deep_research
+skill: sample_scenario
 artifact_type: .md
 processor: text
 metric_groups:
@@ -72,7 +72,7 @@ checks:
 
 ## 3. YAML группы метрик
 
-Файл `checks/metrics/presentation_style/extracted_elements.yaml`:
+Файл `checks/metrics/sample_scenario/extracted_elements.yaml`:
 
 ```yaml
 id: extracted_elements
@@ -80,7 +80,7 @@ phase: universal
 checks:
   - kind: functional
     metric: Все ли элементы исходной презентации извлечены
-    handler: presentation_style/extracted_elements
+    handler: sample_domain/extracted_elements
     artifacts: [source, extracted_slides]
     options:
       json_code_fence: json
@@ -101,7 +101,7 @@ checks:
 
 ## 4. Python функциональной проверки
 
-Файл `checks/functional/presentation_style/extracted_elements.py` должен экспортировать:
+Файл `checks/functional/sample_domain/extracted_elements.py` должен экспортировать:
 
 ```python
 def run(check, artifacts, photos, user_phrase=None, context=None):
@@ -258,10 +258,10 @@ work_dir/
 Кейс:
 
 ```yaml
-id: STYLE-001
+id: SAMPLE-001
 user_phrase: |-
   Скопируй стиль исходной презентации в новую презентацию.
-skill: presentation_style
+skill: sample_scenario
 artifact_type: .pptx
 metric_groups:
   - extracted_elements

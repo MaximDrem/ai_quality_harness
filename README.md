@@ -2,7 +2,7 @@
 
 Harness прогоняет YAML-кейсы через headless OpenCode, собирает конечные и промежуточные артефакты и оценивает их функциональными проверками и LLM-judge. Кейсы, метрики и Python-обработчики разделены: YAML определяет, какие проверки и процессоры применяются к каждому артефакту.
 
-Подробное руководство по добавлению сценариев, YAML и Python-проверок — `ADD_TEST_CASES.md`.
+Подробное руководство по добавлению сценариев, YAML и Python-проверок — `ADD_TEST_CASES.md`. Корневая спецификация поведения проекта — `openspec/specs/lib-ai-quality-harness/spec.md` (OpenSpec 1.6.0).
 
 ## Запуск
 
@@ -30,11 +30,11 @@ PYTHONPATH=. .venv/bin/python -m example.run_test_agent \
 
 ```text
 example/
-  data/deep_research/
-    DR-001.yaml
+  data/sample_scenario/
+    SAMPLE-001.yaml
 
   checks/
-    metrics/deep_research/
+    metrics/sample_scenario/
       quality.yaml
 
     functional/
@@ -43,7 +43,7 @@ example/
       office/
       pptx/
       text/
-      deep_research/
+      sample_domain/
 ```
 
 Новый сценарий появляется в `--list-scenarios`, если в `data/<scenario>/` есть YAML-кейсы. Изменять CLI, `cases.py` или реестры не нужно.
@@ -51,10 +51,10 @@ example/
 Пример кейса:
 
 ```yaml
-id: DR-001
+id: SAMPLE-001
 user_phrase: |-
   Проведи исследование и сохрани отчёт.
-skill: deep_research
+skill: sample_scenario
 artifact_type: .md
 processor: text
 metric_groups:
@@ -70,7 +70,7 @@ checks:
 
 ## YAML-метрики и функциональные обработчики
 
-Пример `checks/metrics/deep_research/quality.yaml`:
+Пример `checks/metrics/sample_scenario/quality.yaml`:
 
 ```yaml
 id: quality
@@ -79,7 +79,7 @@ phase: universal
 checks:
   - kind: functional
     metric: Качество исследования
-    handler: deep_research/check_sources
+    handler: sample_domain/sample_check
     artifacts: [final]
     options:
       min_sources: 3
@@ -157,7 +157,7 @@ artifacts:
 
 checks:
   - kind: functional
-    handler: deep_research/check_sources
+    handler: sample_domain/sample_check
     artifacts: [template, extracted]
     text: Проверка промежуточного результата
 ```
