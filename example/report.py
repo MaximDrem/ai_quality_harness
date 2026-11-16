@@ -1,9 +1,11 @@
+"""Сохранение детализированного XLSX-отчёта по результатам прогонов."""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import List
 
-from .checks.functional._helpers import build_results_workbook
+from .checks._helpers import build_results_workbook
 from .models import RunResult
 
 

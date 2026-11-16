@@ -1,10 +1,12 @@
 # Тест-кейс GD-025.
-# checks — только индивидуальные проверки кейса. Формат проверки:
-#   kind: text | vlm | functional (по умолчанию text)
-#   metric: имя метрики (необязательно)
-#   user_phrase: true/false — передавать ли user_phrase кейса судье (по умолчанию true)
+# metric_groups — группы из metrics/presentations/<группа>.yaml.
+# checks — индивидуальные проверки кейса:
+#   kind: llm | function (по умолчанию llm)
+#   metric: имя метрики; weight: её вес (по умолчанию 1)
+#   handler: Python-проверка относительно checks/functional/
+#   input (обязателен для llm): text | raw_structure | rendered_photos | tool_call
+#   options: параметры handler; user_phrase: передавать ли запрос судье
 #   text: многострочный текст проверки (строки склеиваются через пробел)
-# Общие проверки подключаются из checks/metrics/presentations/<группа>.yaml.
 id: GD-025
 user_phrase: |-
   Сделай презентацию с результатами исследования удовлетворённости клиентов (CSAT и NPS). Данные:
@@ -13,7 +15,6 @@ user_phrase: |-
   дальше.
 skill: presentation
 artifact_type: .pptx
-processor: pptx
 metric_groups:
   - sanity
   - readability
@@ -23,33 +24,39 @@ metric_groups:
   - text
   - content_language
 checks:
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: значение CSAT = 4,2 из 5. ИГНОРИРУЙ: оформление. Вопрос: CSAT указан точно?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: долю удовлетворённых клиентов (84%, оценки 4 и 5). ИГНОРИРУЙ: оформление. Вопрос: 84% указаны
     точно?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: значение NPS = 35 (40% промоутеров, 5% критиков). ИГНОРИРУЙ: оформление. Вопрос: все три
     цифры указаны точно?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: интерпретацию NPS 35 как «хороший» результат. ИГНОРИРУЙ: оформление. Вопрос: интерпретация
     присутствует?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: наличие выводов и рекомендаций по итогам исследования. ИГНОРИРУЙ: оформление. Вопрос: выводы
     и рекомендации присутствуют?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-

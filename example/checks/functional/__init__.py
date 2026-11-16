@@ -1,3 +1,10 @@
+"""Динамическая загрузка и выполнение функциональных проверок Artifact.
+
+Handler выбирается из YAML без глобального реестра. Сегмент path, text,
+raw_structure, rendered_photos или tool_calls определяет атрибут; REQUIRES
+добавляет остальные. Результат прикрепляется к основному артефакту.
+"""
+
 from __future__ import annotations
 
 import functools
@@ -5,12 +12,13 @@ import importlib.util
 import inspect
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List
 
 from ...models import ArtifactContext, Check, CheckResult, TestCase
-from ._helpers import unavailable
+from .._helpers import unavailable
 
 _ROOT = Path(__file__).resolve().parent
+_ATTRIBUTES = {"path", "text", "raw_structure", "rendered_photos", "tool_calls"}
 _ALIASES = {
     "file_opens": "file_renderable",
     "render": "file_renderable",
@@ -24,7 +32,7 @@ def _handler_index() -> Dict[str, Path]:
     stems: Dict[str, Path] = {}
     ambiguous = set()
     for path in _ROOT.rglob("*.py"):
-        if path.name.startswith("_") or path.name == "processor.py" or path == Path(__file__):
+        if path.name.startswith("_") or path == Path(__file__):
             continue
         relative = path.relative_to(_ROOT).with_suffix("").as_posix()
         index[relative] = path
@@ -67,53 +75,55 @@ def _load_handler(name: str) -> Callable:
     return handler
 
 
-def _selected_inputs(
-    check: Check,
-    artifacts: List[str],
-    photos: List[str],
-    context: Optional[ArtifactContext],
-) -> tuple[List[str], List[str]]:
-    if context is None:
-        return artifacts, photos
-    selected = context.paths(check.artifacts or ["final"])
-    return selected, context.photos_for(selected)
+def _input_attribute(name: str) -> str:
+    normalized = name.strip().replace("\\", "/").removesuffix(".py")
+    normalized = _ALIASES.get(normalized, normalized)
+    parts = normalized.split("/")
+    attribute = next((part for part in parts if part in _ATTRIBUTES), None)
+    if attribute is None:
+        raise ValueError(
+            f"Handler {name!r} должен содержать каталог атрибута {sorted(_ATTRIBUTES)}"
+        )
+    return attribute
 
 
-def run_functional_checks(
-    case: TestCase,
-    artifacts: List[str],
-    photos: List[str],
-    context: Optional[ArtifactContext] = None,
-) -> List[CheckResult]:
-    results: List[CheckResult] = []
-    for check in case.check_list:
-        if check.kind != "functional":
-            continue
-        results.append(run_functional_check(check, artifacts, photos, case.user_phrase, context))
-    return results
+def run_functional_checks(case: TestCase, context: ArtifactContext) -> List[CheckResult]:
+    return [
+        run_functional_check(check, context, case.user_phrase)
+        for check in case.check_list
+        if check.kind == "function"
+    ]
 
 
-def run_functional_check(
-    check: Check,
-    artifacts: List[str],
-    photos: List[str],
-    user_phrase: Optional[str] = None,
-    context: Optional[ArtifactContext] = None,
-) -> CheckResult:
-    selected_artifacts, selected_photos = _selected_inputs(check, artifacts, photos, context)
+def run_functional_check(check: Check, context: ArtifactContext, user_phrase: str = "") -> CheckResult:
+    selected = context.select(check.artifacts or ["final"])
     phrase = user_phrase if check.use_user_phrase else None
     name = check.handler or (check.text or "").strip().split(None, 1)[0]
     try:
+        attribute = _input_attribute(name)
         handler = _load_handler(name)
-    except (ImportError, TypeError, ValueError) as error:
+        module = sys.modules[handler.__module__]
+        required = {attribute} | set(getattr(module, "REQUIRES", set()))
+        for required_attribute in required:
+            context.materialize(selected, required_attribute, check.processor)
+    except Exception as error:
         return unavailable(
             check,
             f"Функциональная проверка {name!r} недоступна: {error}",
-            selected_artifacts,
-            selected_photos,
-            phrase,
+            selected,
+            None,
         )
-    kwargs = {}
-    if "context" in inspect.signature(handler).parameters:
-        kwargs["context"] = context
-    return handler(check, selected_artifacts, selected_photos, phrase, **kwargs)
+    parameters = inspect.signature(handler).parameters
+    kwargs = {"context": context} if "context" in parameters else {}
+    if "photos" in parameters:
+        photos = [photo for artifact in selected for photo in artifact.rendered_photos]
+        result = handler(check, selected, photos, phrase, **kwargs)
+    else:
+        result = handler(check, selected, phrase, **kwargs)
+    result.input_attribute = attribute
+    result.input_paths = [artifact.path for artifact in selected if artifact.path]
+    if selected:
+        primary = selected[-1]
+        result.artifact_path = primary.path
+        primary.results.append(result)
+    return result

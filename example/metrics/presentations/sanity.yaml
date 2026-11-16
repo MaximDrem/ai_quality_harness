@@ -1,0 +1,18 @@
+# Базовые проверки файла; подключаются через metric_groups кейса.
+# phase задаёт порядок, weight — вес метрики по умолчанию (1).
+# handler указывает модуль относительно checks/functional/.
+id: sanity
+phase: common
+checks:
+- kind: function
+  metric: Функциональные
+  user_phrase: false
+  handler: path/file_exists
+  text: |-
+    file_exists
+- kind: function
+  metric: Функциональные
+  user_phrase: false
+  handler: rendered_photos/file_renderable
+  text: |-
+    render_success

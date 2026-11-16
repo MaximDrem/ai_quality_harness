@@ -1,10 +1,12 @@
 # Тест-кейс GD-013.
-# checks — только индивидуальные проверки кейса. Формат проверки:
-#   kind: text | vlm | functional (по умолчанию text)
-#   metric: имя метрики (необязательно)
-#   user_phrase: true/false — передавать ли user_phrase кейса судье (по умолчанию true)
+# metric_groups — группы из metrics/presentations/<группа>.yaml.
+# checks — индивидуальные проверки кейса:
+#   kind: llm | function (по умолчанию llm)
+#   metric: имя метрики; weight: её вес (по умолчанию 1)
+#   handler: Python-проверка относительно checks/functional/
+#   input (обязателен для llm): text | raw_structure | rendered_photos | tool_call
+#   options: параметры handler; user_phrase: передавать ли запрос судье
 #   text: многострочный текст проверки (строки склеиваются через пробел)
-# Общие проверки подключаются из checks/metrics/presentations/<группа>.yaml.
 id: GD-013
 user_phrase: |-
   Сделай презентацию для сотрудников про новые правила удалённой работы, вступают в силу
@@ -13,7 +15,6 @@ user_phrase: |-
   На удалёнку нужно подавать заявку минимум за 24 часа. Тон дружелюбный, но информативный.
 skill: presentation
 artifact_type: .pptx
-processor: pptx
 metric_groups:
   - sanity
   - readability
@@ -23,32 +24,38 @@ metric_groups:
   - text
   - content_language
 checks:
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: дату введения (1 сентября 2026 года, с явным указанием года). ИГНОРИРУЙ: оформление. Вопрос:
     дата указана точно и с годом?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: схему удалённых/офисных дней (3 дня удалённо — пн, вт, пт; 2 дня в офисе — ср, чт).
     ИГНОРИРУЙ: оформление. Вопрос: схема указана точно?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: указание обязательного офисного дня — среда. ИГНОРИРУЙ: оформление. Вопрос: среда выделена
     как обязательная?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: указание второго офисного дня — четверг. ИГНОРИРУЙ: оформление. Вопрос: четверг указан как
     второй офисный?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: требование подачи заявки на удалёнку за 24 часа. ИГНОРИРУЙ: оформление. Вопрос: требование 24
     часов указано?
-- kind: text
+- kind: llm
+  input: text
   metric: Контент и язык
   user_phrase: false
   text: |-

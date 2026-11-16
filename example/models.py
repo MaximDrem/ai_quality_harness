@@ -1,9 +1,13 @@
-"""Data-модели пайплайна: кейс, проверка, результаты.
+"""Модели кейсов, артефактов, проверок и результатов прогона.
 
-Модели — чистые dataclass'ы без логики; чтение yaml — в `cases`.
+Artifact объединяет файлы и финальное сообщение, хранит лениво вычисляемые
+text/raw_structure/rendered_photos, связанные tool_calls и результаты проверок. ArtifactContext
+выполняет выбор по ролям и материализацию атрибутов через процессоры.
 """
+
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -22,68 +26,110 @@ class ArtifactSpec:
     stage: str = "final"
     required: bool = True
     processor: str = ""
+    kind: str = "file"
 
 
 @dataclass
-class CollectedArtifact:
-    path: str
+class Artifact:
+    path: Optional[str]
     role: str
     name: str = ""
     artifact_type: str = ""
     origin_path: str = ""
     event_index: Optional[int] = None
     processor: str = ""
+    kind: str = "file"
+    text: str = ""
+    raw_structure: Any = None
+    rendered_photos: List[str] = field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    results: List["CheckResult"] = field(default_factory=list)
+    loaded_attributes: set = field(default_factory=set, repr=False)
+    render_dir: Optional[str] = field(default=None, repr=False)
+
+
+CollectedArtifact = Artifact
 
 
 @dataclass
 class ArtifactContext:
-    items: List[CollectedArtifact] = field(default_factory=list)
-    photos: Dict[str, List[str]] = field(default_factory=dict)
+    items: List[Artifact] = field(default_factory=list)
 
-    def select(self, selectors: Optional[Sequence[str]] = None) -> List[CollectedArtifact]:
+    @property
+    def photos(self) -> Dict[str, List[str]]:
+        return {
+            item.path: item.rendered_photos
+            for item in self.items
+            if item.path is not None
+        }
+
+    def select(self, selectors: Optional[Sequence[str]] = None) -> List[Artifact]:
         selectors = list(selectors or ["final"])
-        selected: List[CollectedArtifact] = []
+        selected: List[Artifact] = []
         seen = set()
         for selector in selectors:
             role = "source" if selector == "attachments" else selector
             for item in self.items:
                 matches = item.role == role or item.name == selector
-                if matches and item.path not in seen:
+                key = item.path if item.path is not None else f"{item.role}:{item.name}"
+                if matches and key not in seen:
                     selected.append(item)
-                    seen.add(item.path)
+                    seen.add(key)
         return selected
 
     def paths(self, selectors: Optional[Sequence[str]] = None) -> List[str]:
-        return [item.path for item in self.select(selectors)]
+        return [item.path for item in self.select(selectors) if item.path is not None]
 
     def photos_for(self, paths: Sequence[str]) -> List[str]:
-        return [photo for path in paths for photo in self.photos.get(path, [])]
+        selected = [item for item in self.items if item.path in paths]
+        return [photo for item in selected for photo in item.rendered_photos]
 
-    def processor_for(self, artifact: str | CollectedArtifact, processor: str = ""):
-        from .processors import get_processor
+    def processor_for(self, artifact: str | Artifact, processor: str = ""):
+        from .checks.processors import get_processor
 
-        item = artifact if isinstance(artifact, CollectedArtifact) else next(
+        item = artifact if isinstance(artifact, Artifact) else next(
             (entry for entry in self.items if entry.path == str(artifact)),
             None,
         )
-        path = item.path if item else str(artifact)
+        path = item.path if item and item.path else str(artifact)
         name = processor or (item.processor if item else "")
-        return get_processor(name=name, path=path)
+        return get_processor(name=name, path=path, artifact_type=item.artifact_type if item else "")
 
-    def extract_text(self, artifact: str | CollectedArtifact, processor: str = "") -> str:
-        path = artifact.path if isinstance(artifact, CollectedArtifact) else str(artifact)
-        return self.processor_for(artifact, processor).extract_text(path)
+    def materialize(
+        self,
+        artifacts: Sequence[Artifact],
+        attribute: str,
+        processor: str = "",
+    ) -> None:
+        for artifact in artifacts:
+            if attribute in ("path", "tool_calls", "final_message") or attribute in artifact.loaded_attributes:
+                continue
+            if artifact.kind == "message":
+                artifact.loaded_attributes.add(attribute)
+                continue
+            self.processor_for(artifact, processor).process(artifact, {attribute})
+
+    def extract_text(self, artifact: str | Artifact, processor: str = "") -> str:
+        item = artifact if isinstance(artifact, Artifact) else next(
+            entry for entry in self.items if entry.path == str(artifact)
+        )
+        self.materialize([item], "text", processor)
+        return item.text
+
+    def serialize_raw_structure(self, artifact: Artifact, processor: str = "") -> str:
+        self.materialize([artifact], "raw_structure", processor)
+        if artifact.kind == "message":
+            return json.dumps(artifact.raw_structure, ensure_ascii=False, default=str)
+        return self.processor_for(artifact, processor).serialize_raw_structure(artifact.raw_structure)
 
 
 @dataclass
 class TestCase:
-    """Один тест-кейс из `data/<case_id>.yaml`."""
-
     id: str
     user_phrase: str
     skill: str
-    artifact_type: str  # основной финальный тип для legacy-кейсов
-    check_list: List[Check] = field(default_factory=list)  # индивидуальные проверки кейса
+    artifact_type: str
+    check_list: List["Check"] = field(default_factory=list)
     scenario: str = ""
     case_dir: str = ""
     metric_groups: List[str] = field(default_factory=list)
@@ -94,60 +140,63 @@ class TestCase:
 
 @dataclass
 class Check:
-    """Одна проверка кейса (из yaml-структуры в `data/` или `checks/common/`)."""
-
-    text: str                      # текст проверки
-    kind: str = "text"             # "text" | "vlm" | "functional"
-    metric: str = ""               # метка метрики
-    use_user_phrase: bool = True   # передавать ли user_phrase кейса судье и в проверку
-    single_slide: bool = False     # судить по одному слайду за запрос
-    mode: str = "serial"           # режим запуска (всегда последовательный)
-    handler: str = ""              # модуль функциональной проверки без example.checks.functional
-    artifacts: List[str] = field(default_factory=list)  # final/source/intermediate или имена артефактов
+    text: str
+    kind: str = "llm"
+    metric: str = ""
+    use_user_phrase: bool = True
+    single_slide: bool = False
+    mode: str = "serial"
+    handler: str = ""
+    artifacts: List[str] = field(default_factory=list)
     options: Dict[str, Any] = field(default_factory=dict)
     processor: str = ""
+    weight: Optional[float] = None
+    input: str = ""
 
 
 @dataclass
 class CheckResult:
-    """Результат одной проверки одним судьёй (llm/функциональным)."""
-
     check: Check
-    success: bool                  # True — пройдена
-    reason: str = ""               # обоснование
-    mode: str = "serial"           # фактический режим запуска
-    source: str = ""               # что отдано судье: текст/фото/—
-    error: str = ""                # ошибка судьи, если была
+    success: bool
+    reason: str = ""
+    mode: str = "serial"
+    source: str = ""
+    error: str = ""
+    artifact_path: Optional[str] = None
+    input_paths: List[str] = field(default_factory=list)
+    input_attribute: str = ""
 
 
 @dataclass
 class MetricResult:
-    """Агрегированный результат метрики (группы проверок)."""
-
     name: str
-    success: bool                  # пройдена, если ВСЕ проверки группы успешны
+    success: bool
     total: int = 0
     passed: int = 0
 
 
 @dataclass
 class RunResult:
-    """Сводный результат выполнения одного кейса."""
-
     test_case: TestCase
+    run: int = 1
     skills: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
     artifacts: List[str] = field(default_factory=list)
     render_photos: List[str] = field(default_factory=list)
     questions: List[Dict[str, Any]] = field(default_factory=list)
     check_results: List[CheckResult] = field(default_factory=list)
-    metric_results: List[MetricResult] = field(default_factory=list)
-    run: int = 1                  # номер прогона датасета
-    judge_xlsx: str = ""           # путь к итоговому xlsx
-    dropped: bool = False          # кейс пропущен (уточняющий вопрос агента)
-    drop_reason: str = ""          # причина пропуска
-    agent_time_sec: float = 0.0    # время работы агента, сек
-    tokens: Dict[str, int] = field(default_factory=dict)  # {"input","output","reasoning","total"}
-    continuations: int = 0         # сколько раз отправлено «Продолжить»
+    dropped: bool = False
+    drop_reason: str = ""
+    judge_xlsx: str = ""
+    agent_time_sec: float = 0.0
+    tokens: Dict[str, int] = field(default_factory=dict)
+    continuations: int = 0
     intermediate_artifacts: List[str] = field(default_factory=list)
     source_artifacts: List[str] = field(default_factory=list)
+    final_message: str = ""
+    actual_skill: str = ""
+    routing_success: bool = False
+    routing_applicable: bool = True
+    context_tokens: int = 0
+    context_limit: int = 0
+    context_percent: float = 0.0

@@ -1,3 +1,10 @@
+"""Оркестрация оценки одного кейса без изменения логики проверок.
+
+Выбирает артефакты, лениво материализует нужные атрибуты, запускает
+функциональные и LLM-проверки, добавляет routing, время, токены и контекст
+в RunResult. Валидация готового файла использует тот же путь без агента.
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -15,14 +22,7 @@ from .cases import (
 from .checks.functional import run_functional_checks
 from .config import CASES_DIR, RENDER_SUPPORTED, WORK_DIRS_DIR, case_runs_dir
 from .logs import write_case_log
-from .models import (
-    ArtifactContext,
-    Check,
-    CheckResult,
-    CollectedArtifact,
-    RunResult,
-    TestCase,
-)
+from .models import Artifact, ArtifactContext, Check, CheckResult, RunResult, TestCase
 from .render.office import render_office_file
 
 
@@ -41,29 +41,10 @@ def render_artifacts(artifacts: List[str], run_dir: Path, expected_type: str) ->
     return photos
 
 
-def _render_context(context: ArtifactContext, run_dir: Path) -> None:
-    for index, item in enumerate(context.items, start=1):
-        path = Path(item.path)
-        out_dir = run_dir / "render_artifact" / f"{index:02d}_{item.role}_{item.name or path.stem}"
-        try:
-            processor = context.processor_for(path)
-        except ValueError:
-            if item.role == "final":
-                raise
-            context.photos[item.path] = []
-            continue
-        context.photos[item.path] = processor.render(str(path), out_dir)
-
-
-async def _judge_case(
-    case: TestCase,
-    artifacts: List[str],
-    photos: List[str],
-    context: Optional[ArtifactContext] = None,
-) -> List[CheckResult]:
+async def _judge_case(case: TestCase, context: ArtifactContext) -> List[CheckResult]:
     from .judge import runner as judge_runner
 
-    return await judge_runner.run_judge(case, artifacts, photos, context=context)
+    return await judge_runner.run_judge(case, context)
 
 
 def _missing_artifact_results(case: TestCase, context: ArtifactContext) -> List[CheckResult]:
@@ -73,9 +54,9 @@ def _missing_artifact_results(case: TestCase, context: ArtifactContext) -> List[
             continue
         check = Check(
             text=f"Обязательный артефакт: {spec.name}",
-            kind="functional",
+            kind="function",
             metric="Артефакты",
-            handler="artifact_required",
+            handler="path/artifact_required",
             artifacts=[spec.name],
         )
         results.append(
@@ -84,9 +65,27 @@ def _missing_artifact_results(case: TestCase, context: ArtifactContext) -> List[
                 success=False,
                 reason=f"Обязательный {spec.stage}-артефакт {spec.name!r} не найден",
                 source="—",
+                artifact_path=spec.path or None,
             )
         )
     return results
+
+
+def _result_metadata(
+    case: TestCase,
+    skills: List[str],
+    context_usage: Dict[str, float],
+    evaluate_agent: bool,
+) -> Dict[str, Any]:
+    actual_skill = skills[-1] if skills else ""
+    return {
+        "actual_skill": actual_skill,
+        "routing_success": actual_skill == case.skill,
+        "routing_applicable": evaluate_agent,
+        "context_tokens": int(context_usage.get("tokens") or 0),
+        "context_limit": int(context_usage.get("limit") or 0),
+        "context_percent": float(context_usage.get("percent") or 0),
+    }
 
 
 async def evaluate_case(
@@ -101,14 +100,17 @@ async def evaluate_case(
     tokens: Optional[Dict[str, int]] = None,
     continuations: int = 0,
     artifact_context: Optional[ArtifactContext] = None,
+    context_usage: Optional[Dict[str, float]] = None,
+    evaluate_agent: bool = True,
 ) -> RunResult:
     runs_dir = case_runs_dir(runs_root, run_num, case.id)
     makedirs(runs_dir)
     questions = questions or []
     tokens = tokens or {}
+    context_usage = context_usage or {}
     context = artifact_context or ArtifactContext(
         items=[
-            CollectedArtifact(
+            Artifact(
                 path=str(Path(path).resolve()),
                 role="final",
                 name="final",
@@ -119,8 +121,16 @@ async def evaluate_case(
             for path in abs_artifacts
         ]
     )
+    for index, artifact in enumerate(context.items, start=1):
+        if artifact.path:
+            artifact.render_dir = str(
+                runs_dir / "render_artifact" / f"{index:02d}_{artifact.role}_{artifact.name}"
+            )
     intermediate = context.paths(["intermediate"])
     sources = context.paths(["source"])
+    messages = context.select(["final_message"])
+    final_message = messages[-1].text if messages else ""
+    metadata = _result_metadata(case, skills, context_usage, evaluate_agent)
 
     if questions:
         reason = "Агент попал в вопрос: " + "; ".join(
@@ -137,18 +147,18 @@ async def evaluate_case(
             continuations=continuations,
             intermediate_artifacts=intermediate,
             source_artifacts=sources,
+            final_message=final_message,
+            **metadata,
         )
 
-    _render_context(context, runs_dir)
     final_paths = context.paths(["final"])
-    final_photos = context.photos_for(final_paths)
     write_case_log(
         runs_dir,
         case,
         skills,
         tools,
         final_paths,
-        final_photos,
+        [],
         questions,
         agent_time_sec=agent_time_sec,
         tokens=tokens,
@@ -157,9 +167,14 @@ async def evaluate_case(
     )
 
     missing_results = _missing_artifact_results(case, context)
-    functional_results = run_functional_checks(case, final_paths, final_photos, context=context)
-    llm_results = await _judge_case(case, final_paths, final_photos, context=context)
+    functional_results = run_functional_checks(case, context)
+    llm_results = await _judge_case(case, context)
     all_results = missing_results + functional_results + llm_results
+    final_photos = [
+        photo
+        for artifact in context.select(["final"])
+        for photo in artifact.rendered_photos
+    ]
 
     print(f"[run:{case.id}] functional={len(functional_results)} judge_checks={len(llm_results)}")
     print(f"[run:{case.id}] skills={skills}")
@@ -169,6 +184,7 @@ async def evaluate_case(
     print(f"[run:{case.id}] render_photos={final_photos}")
     print(f"[run:{case.id}] questions={len(questions)}")
     print(f"[run:{case.id}] agent_time_sec={agent_time_sec:.3f} tokens={tokens} continuations={continuations}")
+    print(f"[run:{case.id}] context={context_usage}")
 
     return RunResult(
         test_case=case,
@@ -183,6 +199,8 @@ async def evaluate_case(
         continuations=continuations,
         intermediate_artifacts=intermediate,
         source_artifacts=sources,
+        final_message=final_message,
+        **metadata,
     )
 
 
@@ -209,7 +227,7 @@ def case_for_validate(
 
     if checks:
         check_list = [
-            Check(text=line.strip(), kind="text")
+            Check(text=line.strip(), kind="llm", input="text")
             for line in checks.splitlines()
             if line.strip()
         ]
@@ -246,6 +264,7 @@ async def validate_artifact(case: TestCase, artifact_path: str, runs_root: Path)
         [],
         [],
         artifact_context=context,
+        evaluate_agent=False,
     )
 
 

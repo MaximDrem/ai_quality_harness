@@ -1,369 +1,198 @@
-# Добавление сценариев, кейсов и проверок
+# Добавление тест-кейса и проверок
 
-Документ описывает текущие правила `refactoring/example`. Основной запуск и устройство клиента описаны в `README.md` и `client/README.md`.
-
-## 1. Из чего состоит сценарий
-
-Для сценария `sample_scenario`:
+## 1. Структура
 
 ```text
 example/
-  data/sample_scenario/
-    SAMPLE-001.yaml
-    assets/
-      source.pptx
-
-  checks/
-    metrics/sample_scenario/
-      extracted_elements.yaml
-
-    functional/sample_domain/
-      extracted_elements.py
+  data/<scenario>/<case>.yaml
+  metrics/<scenario>/<group>.yaml
+  checks/functional/<attribute>/<check>.py
 ```
 
-- `data/<scenario>/` — только кейсы и их входные файлы.
-- `checks/metrics/<scenario>/` — группы проверок в YAML.
-- `checks/functional/<domain>/` — необязательные Python-проверки и процессоры.
-- Имя `domain` не обязано совпадать со `scenario`, но для собственных проверок сценария такое совпадение упрощает навигацию.
-- Сценарий обнаруживается автоматически по наличию YAML непосредственно в `data/<scenario>/`. Регистрировать его в Python не нужно.
+Новый сценарий определяется автоматически по YAML в `data/<scenario>/`. Регистрация в Python не нужна.
 
-Запуск:
-
-```bash
-PYTHONPATH=. python3.12 -m example.run_test_agent \
-  --scenario sample_scenario --id SAMPLE-001 --runs 1
-```
-
-## 2. YAML тест-кейса
-
-Минимальный кейс с одним финальным файлом:
+## 2. Кейс
 
 ```yaml
 id: SAMPLE-001
 user_phrase: |-
-  Проведи исследование и сохрани отчёт.
-skill: sample_scenario
-artifact_type: .md
-processor: text
+  Создай презентацию по заданию.
+skill: presentation
+artifact_type: .pptx
 metric_groups:
-  - quality
-checks:
-  - kind: text
-    metric: Следование инструкции
-    text: |-
-      Отчёт содержит выводы и ссылки на источники.
+  - sample_group
 ```
 
-Поля кейса:
+`artifact_type` автоматически выбирает процессор по расширению. Поле `processor` нужно только для нестандартного override.
 
-| Поле | Назначение |
-|---|---|
-| `id` | Уникальный ID внутри сценария; используется в `--id` и имени каталога результата. |
-| `user_phrase` | Первое сообщение агенту. |
-| `skill` | Название скила; если не задано, используется имя сценария. |
-| `artifact_type` | Тип единственного финала для простого кейса, например `.pptx`. Если задан `artifacts`, может быть взят из первого final-описания. |
-| `processor` | Процессор по умолчанию для артефактов и индивидуальных проверок кейса. Для разнотипных артефактов лучше задавать процессор отдельно каждому. |
-| `metric_groups` | Имена YAML-групп без `.yaml`. Ничего дополнительно по типу файла автоматически не подключается. |
-| `attachments` | Входные файлы агента. |
-| `artifacts` | Описания промежуточных и финальных результатов. |
-| `checks` | Индивидуальные проверки кейса. |
-
-Для одного финала можно использовать только `artifact_type`. Для нескольких результатов нужен `artifacts`.
-
-## 3. YAML группы метрик
-
-Файл `checks/metrics/sample_scenario/extracted_elements.yaml`:
-
-```yaml
-id: extracted_elements
-phase: universal
-checks:
-  - kind: functional
-    metric: Все ли элементы исходной презентации извлечены
-    handler: sample_domain/extracted_elements
-    artifacts: [source, extracted_slides]
-    options:
-      json_code_fence: json
-    text: Сравнение объектов исходной PPTX с JSON в промежуточном Markdown
-```
-
-Правила:
-
-- Кейс подключает группу через `metric_groups: [extracted_elements]`.
-- Сначала ищется `checks/metrics/<scenario>/<group>.yaml`, затем `checks/metrics/common/<artifact_type>/<group>.yaml`.
-- `phase: common` ставит группу перед индивидуальными проверками кейса; `phase: universal` — после них.
-- `processor` на уровне группы необязателен и становится значением по умолчанию для проверок группы.
-- `kind: text` и `kind: vlm` используют существующий LLM-judge; `handler` им не нужен.
-- `kind: functional` требует Python-обработчик.
-- `options` передаётся в обработчик как `check.options`.
-- `user_phrase: false` запрещает передавать исходный запрос в проверку; по умолчанию он передаётся.
-- `single_slide: true` включает существующий послайдовый режим judge, если он применим.
-
-## 4. Python функциональной проверки
-
-Файл `checks/functional/sample_domain/extracted_elements.py` должен экспортировать:
-
-```python
-def run(check, artifacts, photos, user_phrase=None, context=None):
-    ...
-```
-
-Возвращается `CheckResult`, обычно через универсальные helpers:
-
-```python
-from example.checks.functional._helpers import ok, unavailable
-```
-
-Внутри доступны:
-
-- `check.options` — параметры из YAML;
-- `artifacts` — пути, выбранные полем `artifacts` проверки;
-- `photos` — изображения этих артефактов, если их удалось получить;
-- `context.select([...])` — объекты `CollectedArtifact` с именем, ролью и версией;
-- `context.paths([...])` — только пути;
-- `context.extract_text(path)` — текст через процессор конкретного артефакта;
-- `item.origin_path` — исходный путь промежуточного файла до snapshot;
-- `item.event_index` — событие, на котором сохранена версия.
-
-Не нужно изменять `checks/functional/__init__.py`: `handler` загружается по полному пути. Одинаковые basename в разных каталогах допустимы.
-
-Существующие обработчики можно переиспользовать по полному пути, например:
-
-```yaml
-handler: text/repeated_words
-```
-
-или:
-
-```yaml
-handler: pptx/instruction/slide_count
-options:
-  condition: 10
-```
-
-## 5. Переиспользование процессора артефакта
-
-Если тип файла уже поддерживается, новый процессор не нужен. Достаточно указать существующий:
+Для нескольких результатов используйте `artifacts` вместо одного `artifact_type`:
 
 ```yaml
 artifacts:
+  - name: extracted
+    stage: intermediate
+    type: .md
+    path: "*-ref/*.md"
+    required: true
   - name: deck
     stage: final
     type: .pptx
-    processor: pptx
-    path: new_presentation/result.pptx
+    path: "output/*.pptx"
+    required: true
 ```
 
-Доступные встроенные процессоры:
+`path` — путь или glob относительно `work_dir`. Вложения:
 
-- `pptx` — PPTX;
-- `office` — DOCX/XLSX/PDF;
-- `text` — Markdown/TXT/JSON/CSV/HTML/SVG/log.
+```yaml
+attachments:
+  - name: source
+    path: assets/source.pptx
+```
 
-Если `processor` не указан, он выбирается по расширению. Явное указание предпочтительнее при нескольких типах файлов и переопределённых форматах.
+Путь вложения считается от каталога сценария.
 
-Новый процессор нужен только для нового способа чтения или рендера. Он добавляется как `checks/functional/<domain>/processor.py`:
+## 3. Группа метрик
+
+`metrics/<scenario>/sample_group.yaml`:
+
+```yaml
+id: sample_group
+phase: universal
+weight: 1
+checks:
+  - kind: function
+    metric: Пример метрики
+    handler: pptx/raw_structure/sample_check
+    artifacts: [deck]
+    options:
+      threshold: 10
+    text: Проверка структуры результата
+```
+
+- `metric_groups` подключает только перечисленные группы.
+- `weight` группы наследуется проверками; без него вес равен `1`.
+- `phase: common` ставит группу перед индивидуальными проверками, `universal` — после.
+- Типов два: `function` для Python и `llm` для judge.
+- Для `llm` обязателен `input: text | raw_structure | rendered_photos | tool_call`.
+
+Отдельная проверка кейса тоже может иметь вес:
+
+```yaml
+checks:
+  - kind: function
+    metric: Отдельная метрика
+    weight: 0.5
+    handler: text/sample_check
+    text: Отдельная проверка
+```
+
+Конфликтующие веса одной метрики запрещены.
+
+## 4. Функциональная проверка
+
+`checks/functional/pptx/raw_structure/sample_check.py`:
+
+```python
+from example.checks._helpers import ok, unavailable
+
+
+def run(check, artifacts, user_phrase=None, context=None):
+    value = check.options.get("threshold")
+    if artifacts[0].raw_structure:
+        return ok(check, "Структура получена", artifacts, user_phrase)
+    return unavailable(check, "Структура отсутствует", artifacts, user_phrase)
+```
+
+Каталог handler определяет нужный атрибут:
+
+| Каталог | Атрибут |
+|---|---|
+| `path/` | `artifact.path` |
+| `text/` | `artifact.text` |
+| `raw_structure/` | `artifact.raw_structure` |
+| `rendered_photos/` | `artifact.rendered_photos` |
+| `tool_calls/` | `artifact.tool_calls` |
+
+Если нужны дополнительные атрибуты, в модуле укажите:
+
+```python
+REQUIRES = {"raw_structure", "rendered_photos"}
+```
+
+Результат автоматически добавляется в `artifact.results`.
+
+Функциональная проверка инструментов:
+
+```yaml
+- kind: function
+  handler: tool_calls/tool_called
+  options: {tool: write}
+  text: Файл записан
+```
+
+Проверка той же трассы через judge:
+
+```yaml
+- kind: llm
+  input: tool_call
+  text: Файл сохранён успешно
+```
+
+Для judge `input` обязателен: `text | raw_structure | rendered_photos | tool_call`.
+
+## 5. Процессоры
+
+Существующий тип переиспользуется автоматически по расширению. Новый формат требует только `checks/processors/processor_<name>.py`:
 
 ```python
 class Processor:
     extensions = {".custom"}
 
-    def extract_text(self, path: str) -> str:
-        ...
-
-    def render(self, path: str, output_dir) -> list[str]:
-        ...
+    def process(self, artifact, attributes):
+        for attribute in attributes:
+            if attribute == "text":
+                artifact.text = ...
+            elif attribute == "raw_structure":
+                artifact.raw_structure = ...
+            elif attribute == "rendered_photos":
+                artifact.rendered_photos = ...
+            artifact.loaded_attributes.add(attribute)
 ```
 
-Процессор не определяет состав проверок. Он только читает и рендерит файл; проверки выбираются YAML.
+Процессор заполняет атрибуты, но не выбирает проверки.
 
-## 6. Описание артефактов
+## 6. Финальный ответ без файла
+
+`final_message` доступен как виртуальный артефакт с текстом финального ответа:
 
 ```yaml
-attachments:
-  - name: source
-    path: assets/source.pptx
-
 artifacts:
-  - name: extracted_slides
-    stage: intermediate
-    type: .md
-    processor: text
-    path: "*-ref/*.md"
-    required: true
-
-  - name: deck
+  - name: final_message
     stage: final
-    type: .pptx
-    processor: pptx
-    path: new_presentation/result.pptx
-    required: true
-```
-
-Правила:
-
-- `name` уникально внутри кейса и используется в `artifacts` проверки.
-- `stage` — `final` или `intermediate`.
-- `type` — расширение с точкой.
-- `processor` — обработчик этого конкретного файла.
-- `path` — путь или glob относительно `work_dir` агента.
-- `required: true` означает, что отсутствие файла даёт FAILED.
-- Пути вложений считаются от `data/<scenario>/`, а не от `work_dir`.
-
-Селекторы проверки:
-
-- `source` или `attachments` — исходные вложения;
-- `intermediate` — все snapshot’ы промежуточных файлов;
-- `final` — финальные файлы;
-- конкретное `name`, например `source`, `extracted_slides`, `deck`.
-
-По умолчанию проверка получает `final`.
-
-## 7. Как ищутся файлы в `work_dir`
-
-Промежуточные файлы собираются во время событий агента:
-
-1. Из путей завершённых `write`/`edit`.
-2. Из tool output и текстовых сообщений.
-3. Из рекурсивного сканирования `work_dir` по промежуточным glob’ам — это нужно и для shell-команд без явного пути в output.
-
-Каждая изменившаяся версия копируется в `intermediate_artifacts/`. Повторное чтение неизменного содержимого не создаёт дубль. Проверка получает snapshot, а исходный путь доступен в `origin_path`.
-
-Финальные файлы собираются из tool input/output, найденных клиентом артефактов и рекурсивного сканирования `work_dir`. Поэтому вложенная структура поддерживается:
-
-```text
-work_dir/new_presentation/result.pptx
-```
-
-Её можно описать как `new_presentation/result.pptx` или `new_presentation/*.pptx`.
-
-Если `path` не содержит `/`, glob применяется к basename на любом уровне вложенности. Например, `*.pptx` ищет все PPTX рекурсивно. Если `/` есть, glob сравнивается с относительным путём.
-
-Один файл может соответствовать нескольким файлам одного `name`, но не нескольким разным `name`: пересекающиеся описания отклоняются с ошибкой.
-
-Финальная фраза «Ваша презентация готова» сама по себе не обязательна: файл внутри `work_dir` будет найден сканированием. Надёжный вариант — создать файл внутри `work_dir` и вернуть его путь без пробелов.
-
-## 8. Пример: JSON слайдов в `*-ref/*.md`
-
-Сценарий создаёт:
-
-```text
-work_dir/
-  my_presentation-ref/
-    extracted.md
-  my_presentation/
-    result.pptx
-```
-
-Кейс:
-
-```yaml
-id: SAMPLE-001
-user_phrase: |-
-  Скопируй стиль исходной презентации в новую презентацию.
-skill: sample_scenario
-artifact_type: .pptx
-metric_groups:
-  - extracted_elements
-
-attachments:
-  - name: source
-    path: assets/source.pptx
-
-artifacts:
-  - name: extracted_slides
-    stage: intermediate
-    type: .md
-    processor: text
-    path: "*-ref/*.md"
+    kind: message
     required: true
 
-  - name: deck
-    stage: final
-    type: .pptx
-    processor: pptx
-    path: "my_presentation/*.pptx"
-    required: true
+checks:
+  - kind: llm
+  input: text
+    artifacts: [final_message]
+    metric: Качество ответа
+    text: Ответ полный и соответствует заданию
 ```
 
-Метрика приведена в разделе 3. Проверка должна:
+Файл в этом случае не требуется.
 
-1. Получить исходную PPTX через `context.select(["source"])`.
-2. Получить версии Markdown через `context.select(["extracted_slides"])`.
-3. Выбрать последнюю версию или проверить все версии.
-4. Прочитать Markdown через `context.extract_text(extracted.path)`.
-5. Самостоятельно извлечь JSON из code fences и выполнить `json.loads`.
-6. Сравнить JSON с объектами исходной PPTX.
-7. Вернуть `ok(...)` или `unavailable(...)`.
+## 7. Выбор файлового финала
 
-Каркас без реализации конкретного сравнения:
+Сначала проверяется путь из завершённого финального сообщения. Если подходящего пути нет, выполняется поиск по YAML glob внутри `work_dir`; затем отправляется «Продолжить». `uploads/` и исходные attachments не участвуют в выборе финала.
 
-```python
-def run(check, artifacts, photos, user_phrase=None, context=None):
-    source = context.select(["source"])[0]
-    versions = context.select(["extracted_slides"])
-    if not versions:
-        return unavailable(check, "Нет extracted_slides", artifacts, photos, user_phrase)
+## 8. Результаты
 
-    extracted = versions[-1]
-    markdown = context.extract_text(extracted.path)
+Полный прогон создаёт `raw.log`, человекочитаемый `agent.log`, XLSX и `one_number_result.txt`. Routing и время отображаются отдельно и не входят в `S`.
 
-    # Здесь обработчик извлекает JSON из markdown,
-    # читает source.path и сравнивает элементы презентации.
-    ...
-```
-
-В этом примере у группы и проверки не задан общий `processor`: у source он `pptx` по расширению, у Markdown явно `text`. Поэтому `context.extract_text(extracted.path)` вызовет правильный процессор. Не нужно передавать `check.processor="pptx"` для разнотипных входов.
-
-Встроенный `text`-процессор только читает Markdown. Извлечение JSON и сравнение элементов — ответственность отдельной функциональной проверки.
-
-## 9. Текущие ограничения и проблемные случаи
-
-### Широкий glob может принять исходную PPTX за финальную
-
-Клиент копирует вложения в:
-
-```text
-work_dir/uploads/<session>/<message>/
-```
-
-Рекурсивный поиск финалов сейчас не исключает `uploads/`. Поэтому при загруженной исходной PPTX широкие `*.pptx` и `*/*.pptx` могут ошибочно засчитать её как результат и преждевременно прекратить «Продолжить».
-
-До отдельной доработки фильтрации нужно задавать специфичную выходную папку, например:
-
-```yaml
-path: "my_presentation/*.pptx"
-```
-
-Если имя выходной папки заранее неизвестно и она может находиться на том же уровне, что и `uploads/`, текущего декларативного механизма недостаточно. Потребуется добавить `exclude` или исключить `uploads/` из финальных кандидатов в коде.
-
-### Файл вне `work_dir`
-
-Рекурсивное сканирование работает только внутри `work_dir`. Путь из финального текстового сообщения к внешнему файлу сейчас не является надёжным способом регистрации финала. Агент должен сохранять результат внутри `work_dir`; пути с пробелами также лучше избегать.
-
-### Несколько финалов в `--validate`
-
-`--validate` принимает один файл. Он должен соответствовать одному final-описанию; остальные обязательные финалы будут отмечены отсутствующими. Для комплексной проверки нескольких готовых файлов нужен отдельный режим или расширение CLI.
-
-### Проверки клонирования стиля
-
-Архитектура source/intermediate/final уже поддерживает описанный сценарий, но конкретные алгоритмы извлечения JSON и сравнения шрифтов, цветов, фигур и других элементов пока не реализованы.
-
-## 10. Минимальная проверка нового сценария
-
-Без OpenCode и VLLM можно проверить загрузку:
+Offline-проверка:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3.12 -m unittest discover -s tests -v
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3.12 -m example.run_test_agent --list-scenarios
 ```
-
-Перед полным прогоном проверить:
-
-- сценарий и ID видны;
-- все `metric_groups` существуют;
-- каждый `handler` и `processor` загружается;
-- относительные вложения существуют;
-- промежуточный glob соответствует фактической структуре;
-- финальный glob не захватывает `uploads/` и исходные файлы;
-- имена артефактов уникальны и проверки используют правильные селекторы.

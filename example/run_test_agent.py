@@ -1,3 +1,10 @@
+"""CLI прогона YAML-кейсов и валидации готовых артефактов.
+
+Поддерживает выбор сценария, модели OpenCode, auth_mode и skills_dir. Полный
+прогон создаёт XLSX и one_number_result.txt; справка и валидация не обновляют
+cookies и не запускают sidecar.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +25,7 @@ from .config import RUNS_DIR, SEMAPHORE_LIMIT, WORK_DIRS_DIR, load_dotenv
 from .evaluate import case_for_validate, list_models, validate_artifact, with_universal_checks
 from .models import RunResult
 from .report import write_results_xlsx
+from .scoring import write_one_number_result
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -122,9 +130,11 @@ async def _full_run_mode(args: argparse.Namespace, runs_root: Path) -> int:
 
     if results:
         result_xlsx = write_results_xlsx(results, runs_root / "results.xlsx")
+        one_number = write_one_number_result(results, runs_root / "one_number_result.txt")
         for result in results:
             result.judge_xlsx = result_xlsx
         print(f"[run] result_xlsx={result_xlsx}")
+        print(f"[run] one_number_result={one_number}")
     print("метрики по кейсам:")
     for result in results:
         print(f"  [{result.test_case.id}] (run {result.run})")

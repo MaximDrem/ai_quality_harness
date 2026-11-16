@@ -1,10 +1,12 @@
 # Тест-кейс GD-022.
-# checks — только индивидуальные проверки кейса. Формат проверки:
-#   kind: text | vlm | functional (по умолчанию text)
-#   metric: имя метрики (необязательно)
-#   user_phrase: true/false — передавать ли user_phrase кейса судье (по умолчанию true)
+# metric_groups — группы из metrics/presentations/<группа>.yaml.
+# checks — индивидуальные проверки кейса:
+#   kind: llm | function (по умолчанию llm)
+#   metric: имя метрики; weight: её вес (по умолчанию 1)
+#   handler: Python-проверка относительно checks/functional/
+#   input (обязателен для llm): text | raw_structure | rendered_photos | tool_call
+#   options: параметры handler; user_phrase: передавать ли запрос судье
 #   text: многострочный текст проверки (строки склеиваются через пробел)
-# Общие проверки подключаются из checks/metrics/presentations/<группа>.yaml.
 id: GD-022
 user_phrase: |-
   Сделай презентацию для онбординга нового менеджера по продажам — план его первых 30 дней.
@@ -12,7 +14,6 @@ user_phrase: |-
   с наставником, неделя 4 — самостоятельная работа. Тон дружелюбный: человек приходит к нам впервые.
 skill: presentation
 artifact_type: .pptx
-processor: pptx
 metric_groups:
   - sanity
   - readability
@@ -22,27 +23,32 @@ metric_groups:
   - text
   - content_language
 checks:
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: упоминание должности (менеджер по продажам). ИГНОРИРУЙ: оформление. Вопрос: должность указана
     явно?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: план по неделям (неделя 1 — знакомство, неделя 2 — обучение, неделя 3 — работа с наставником,
     неделя 4 — самостоятельная работа). ИГНОРИРУЙ: оформление. Вопрос: все 4 этапа указаны точно?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: соответствие таймлайна 30 дням. ИГНОРИРУЙ: оформление. Вопрос: этапы укладываются в 30 дней?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: наличие разбивки по неделям. ИГНОРИРУЙ: оформление. Вопрос: разбивка по неделям присутствует?
-- kind: text
+- kind: llm
+  input: text
   metric: Контент и язык
   user_phrase: false
   text: |-

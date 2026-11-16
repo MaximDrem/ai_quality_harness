@@ -1,3 +1,9 @@
+"""Выполнение кейса в AgentSession и потоковый сбор событий.
+
+Передаёт вложения только в первом запросе, сохраняет raw.log и agent.log,
+ожидает все обязательные финалы и передаёт ArtifactContext в evaluator.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,8 +16,9 @@ from ..artifacts import ArtifactCollector
 from ..cases import makedirs, resolve_attachment_paths
 from ..config import case_runs_dir
 from ..evaluate import evaluate_case
-from ..logs import RawLogWriter, extract_questions, record_event
+from ..logs import HumanLogWriter, RawLogWriter, extract_questions, record_event
 from .events import (
+    collect_context_usage,
     collect_skills_tools,
     collect_tokens,
     extract_error,
@@ -61,7 +68,7 @@ async def run_case(
     async with semaphore:
         with AgentSession(**session_kwargs) as session:
             result: AgentResult = AgentResult(session_id="")
-            with RawLogWriter(runs_dir / "raw.log") as raw:
+            with RawLogWriter(runs_dir / "raw.log") as raw, HumanLogWriter(runs_dir / "agent.log") as human_log:
                 proxy = session.instance.proxy if session.instance else None
                 attach_logger = getattr(proxy, "attach_logger", None)
                 if callable(attach_logger):
@@ -89,6 +96,7 @@ async def run_case(
                         collected_questions += extract_questions(event)
                         collector.capture_event(event, event_index)
                         record_event(event, raw)
+                        human_log.write_event(event)
                         if collected_questions:
                             break
 
@@ -114,6 +122,7 @@ async def run_case(
     artifact_context = collector.finalize(result, output_paths)
     artifacts = artifact_context.paths(["final"])
     skills, tools = collect_skills_tools(result.events)
+    context_usage = collect_context_usage(result.events)
     return await evaluate_case(
         case,
         runs_root,
@@ -126,4 +135,5 @@ async def run_case(
         tokens=tokens,
         continuations=continuations,
         artifact_context=artifact_context,
+        context_usage=context_usage,
     )

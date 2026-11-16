@@ -1,3 +1,5 @@
+"""Offline-тесты выбора артефактов, snapshot'ов, uploads и final_message."""
+
 from __future__ import annotations
 
 import tempfile
@@ -8,7 +10,7 @@ from types import SimpleNamespace
 from example.artifacts import ArtifactCollector, validation_context
 from example.evaluate import _missing_artifact_results
 from example.judge.extract import parse_artifact_text
-from example.checks.functional.common.file_renderable import run as file_renderable
+from example.checks.functional.rendered_photos.file_renderable import run as file_renderable
 from example.models import ArtifactContext, ArtifactSpec, AttachmentSpec, Check, CollectedArtifact, TestCase
 
 
@@ -35,7 +37,7 @@ class ArtifactTests(unittest.TestCase):
             case = TestCase(
                 id="style",
                 user_phrase="test",
-                skill="presentation_style",
+                skill="sample_scenario",
                 artifact_type=".pptx",
                 case_dir=str(root),
                 attachments=[AttachmentSpec(path="source.pptx", name="template")],
@@ -67,7 +69,7 @@ class ArtifactTests(unittest.TestCase):
         case = TestCase(
             id="research",
             user_phrase="test",
-            skill="deep_research",
+            skill="sample_scenario",
             artifact_type=".md",
         )
         collector = ArtifactCollector(case, Path("/tmp"), Path("/tmp/snapshots"))
@@ -86,7 +88,7 @@ class ArtifactTests(unittest.TestCase):
             case = TestCase(
                 id="research",
                 user_phrase="test",
-                skill="deep_research",
+                skill="sample_scenario",
                 artifact_type=".md",
                 case_dir=str(root),
                 attachments=[AttachmentSpec(path="source.pptx", name="source")],
@@ -242,14 +244,75 @@ class ArtifactTests(unittest.TestCase):
             context = validation_context(case, str(result))
             self.assertEqual(context.paths(["report"]), [str(result)])
 
+    def test_uploads_are_never_final_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            uploaded = work / "uploads" / "session" / "message" / "source.pptx"
+            uploaded.parent.mkdir(parents=True)
+            uploaded.write_bytes(b"source")
+            case = TestCase(id="upload", user_phrase="test", skill="demo", artifact_type=".pptx")
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            result = SimpleNamespace(artifacts=[], events=[])
+            self.assertFalse(collector.has_final(result, []))
+            final = work / "nested" / "result.pptx"
+            final.parent.mkdir()
+            final.write_bytes(b"final")
+            self.assertTrue(collector.has_final(result, []))
+            context = collector.finalize(result, [])
+            self.assertEqual(context.paths(["final"]), [str(final)])
+
+    def test_final_message_path_has_priority_over_filesystem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            first = work / "first.pptx"
+            second = work / "nested" / "second.pptx"
+            second.parent.mkdir()
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            part = SimpleNamespace(
+                type="message.part.updated",
+                properties={"part": {"type": "text", "messageID": "message", "text": f"Готово: {second}"}},
+            )
+            updated = SimpleNamespace(
+                type="message.updated",
+                properties={"info": {"id": "message", "role": "assistant", "finish": "stop", "time": {"completed": 1}}},
+            )
+            idle = SimpleNamespace(type="session.status", properties={"status": {"type": "idle"}})
+            result = SimpleNamespace(artifacts=[], events=[part, updated, idle])
+            case = TestCase(id="priority", user_phrase="test", skill="demo", artifact_type=".pptx")
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            context = collector.finalize(result, [])
+            self.assertEqual(context.paths(["final"]), [str(second)])
+            self.assertIn(str(second), context.select(["final_message"])[0].text)
+
+    def test_final_message_can_be_the_only_required_artifact(self):
+        part = SimpleNamespace(
+            type="message.part.updated",
+            properties={"part": {"type": "text", "messageID": "message", "text": "Ответ пользователю"}},
+        )
+        updated = SimpleNamespace(
+            type="message.updated",
+            properties={"info": {"id": "message", "role": "assistant", "finish": "stop", "time": {"completed": 1}}},
+        )
+        idle = SimpleNamespace(type="session.status", properties={"status": {"type": "idle"}})
+        result = SimpleNamespace(artifacts=[], events=[part, updated, idle])
+        case = TestCase(
+            id="message",
+            user_phrase="test",
+            skill="demo",
+            artifact_type="",
+            artifacts=[ArtifactSpec(name="final_message", kind="message")],
+        )
+        collector = ArtifactCollector(case, Path("/tmp"), Path("/tmp/snapshots"))
+        self.assertTrue(collector.has_final(result, []))
+        context = collector.finalize(result, [])
+        self.assertEqual(context.select(["final_message"])[0].text, "Ответ пользователю")
+
     def test_renderable_checks_every_selected_artifact(self):
         first = CollectedArtifact(path="/tmp/first.pptx", role="final", name="first")
         second = CollectedArtifact(path="/tmp/second.pptx", role="final", name="second")
-        context = ArtifactContext(
-            items=[first, second],
-            photos={first.path: ["page-1.png"], second.path: []},
-        )
-        result = file_renderable(Check(text="render", kind="functional"), [first.path, second.path], [], context=context)
+        first.rendered_photos = ["page-1.png"]
+        result = file_renderable(Check(text="render", kind="function"), [first, second])
         self.assertFalse(result.success)
         self.assertIn("second.pptx", result.reason)
 

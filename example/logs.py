@@ -1,8 +1,8 @@
 """Запись логов прогона кейса.
 
-`record_event` пишет сырые события агента в raw.log по мере поступления,
-`write_case_log` — сводный лог кейса (check_list, скилы/тулы/артефакты,
-фото, вопросы).
+`record_event` сохраняет полный технический raw.log, HumanLogWriter создаёт
+компактный человекочитаемый agent.log, а write_case_log записывает чек-лист,
+роутинг, артефакты, вопросы, время и токены.
 """
 from __future__ import annotations
 
@@ -138,6 +138,58 @@ def record_event(ev, raw_writer) -> None:
         return
     raw_writer.write(serialize(_event_record(ev)) + "\n")
     raw_writer.flush()
+
+
+class HumanLogWriter:
+    def __init__(self, path: Path):
+        self._stream = path.open("w", encoding="utf-8")
+        self._last_context = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._stream.close()
+
+    def _write(self, message: str) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        self._stream.write(f"[{stamp}] {message}\n")
+        self._stream.flush()
+
+    def write_event(self, ev) -> None:
+        for tool_call in getattr(ev, "tool_calls", []) or []:
+            state = getattr(tool_call, "state", "")
+            if state not in ("completed", "error"):
+                continue
+            tool = getattr(tool_call, "tool", "unknown")
+            is_skill = getattr(tool_call, "is_skill", False) or tool == "skill" or tool.startswith("skill:")
+            data = getattr(tool_call, "input", {}) or {}
+            if is_skill and state == "completed":
+                self._write(f"SKILL {data.get('name') or tool}")
+                continue
+            if not is_skill:
+                target = data.get("filePath") or data.get("path") or data.get("command") or ""
+                self._write(f"TOOL {tool} {target} — {state}")
+        if getattr(ev, "type", "") == "session.context.usage":
+            properties = getattr(ev, "properties", {}) or {}
+            current = (properties.get("size"), properties.get("threshold"), properties.get("percent"))
+            if current != self._last_context and current[0] is not None:
+                self._last_context = current
+                self._write(f"CONTEXT {current[0]}/{current[1]} tokens ({current[2]}%)")
+        if getattr(ev, "type", "") == "message.part.updated":
+            for text in getattr(ev, "text_outputs", []) or []:
+                if text.text:
+                    self._write(f"ASSISTANT {text.text}")
+        if getattr(ev, "type", "") == "question.asked":
+            for question in extract_questions(ev):
+                self._write(f"QUESTION {question.get('question')}")
+        if getattr(ev, "type", "") == "session.error":
+            error = (getattr(ev, "properties", {}) or {}).get("error")
+            self._write(f"ERROR {error}")
+        if getattr(ev, "type", "") == "session.status":
+            status = (getattr(ev, "properties", {}) or {}).get("status", {}).get("type")
+            if status == "idle":
+                self._write("IDLE")
 
 
 class RawLogWriter:

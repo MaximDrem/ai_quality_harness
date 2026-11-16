@@ -1,8 +1,8 @@
-# ai-quality-harness
+# lib-ai-quality-harness
 
-Harness прогоняет YAML-кейсы через headless OpenCode, собирает конечные и промежуточные артефакты и оценивает их функциональными проверками и LLM-judge. Кейсы, метрики и Python-обработчики разделены: YAML определяет, какие проверки и процессоры применяются к каждому артефакту.
+Harness прогоняет YAML-кейсы через headless OpenCode, собирает файлы и финальные ответы в единые объекты `Artifact`, выполняет выбранные проверки и формирует XLSX/TXT-результаты.
 
-Подробное руководство по добавлению сценариев, YAML и Python-проверок — `ADD_TEST_CASES.md`. Корневая спецификация поведения проекта — `openspec/specs/lib-ai-quality-harness/spec.md` (OpenSpec 1.6.0).
+Практическая инструкция — `ADD_TEST_CASES.md`. Корневая спецификация — `openspec/specs/lib-ai-quality-harness/spec.md` (OpenSpec 1.6.0).
 
 ## Запуск
 
@@ -20,177 +20,152 @@ PYTHONPATH=. .venv/bin/python -m example.run_test_agent \
 ```
 
 - `--scenario` — каталог внутри `example/data`; по умолчанию `presentations`.
-- `--list-scenarios` — автоматически найденные сценарии.
-- `--auth-mode {ift,prod,cert}` — режим `client`; `prod` использует Electron-вход.
+- `--auth-mode {ift,prod,cert}` — режим клиента; `prod` использует Electron-вход.
 - `--skills-dir` — `OPENCODE_CONFIG_DIR` с `skills/`, `agent/` и настройками.
-- `--validate` не запускает OpenCode и не обновляет cookies. Для Office-рендера нужны LibreOffice и `pdftoppm`; judge настраивается через `VLLM_BASE_URL`, `VLLM_MODEL`, `VLLM_API_KEY`.
+- `--validate` не запускает OpenCode и не обновляет cookies.
 - Полный запуск требует внешний `desktop-ai-app`, `bun`, Node >= 22 и авторизацию стенда. Подробнее — `client/README.md`.
 
-## Структура сценария и проверок
+## Структура
 
 ```text
 example/
-  data/sample_scenario/
-    SAMPLE-001.yaml
-
+  data/<scenario>/<case>.yaml
+  metrics/<scenario>/<group>.yaml
   checks/
-    metrics/sample_scenario/
-      quality.yaml
-
+    llm/
+    processors/processor_<type>.py
     functional/
-      _helpers.py
-      common/
-      office/
-      pptx/
+      path/
       text/
-      sample_domain/
+      rendered_photos/
+      tool_calls/
+      pptx/
+        raw_structure/
+        rendered_photos/
+    _helpers.py
 ```
 
-Новый сценарий появляется в `--list-scenarios`, если в `data/<scenario>/` есть YAML-кейсы. Изменять CLI, `cases.py` или реестры не нужно.
+Сценарии обнаруживаются автоматически. Метрики находятся рядом с кейсами логически, но отдельно от кода проверок. Новый обработчик или процессор не требует центральной регистрации.
 
-Пример кейса:
+## YAML
+
+Простой кейс:
 
 ```yaml
-id: SAMPLE-001
-user_phrase: |-
-  Проведи исследование и сохрани отчёт.
-skill: sample_scenario
-artifact_type: .md
-processor: text
-metric_groups:
-  - quality
-checks:
-  - kind: text
-    metric: Следование инструкции
-    text: |-
-      Отчёт содержит выводы и ссылки на источники.
+id: GD-001
+user_phrase: Создай презентацию по заданию.
+skill: presentation
+artifact_type: .pptx
+metric_groups: [sanity, readability]
 ```
 
-`metric_groups` перечисляет только нужные группы. Группа сначала ищется в `checks/metrics/<scenario>/<group>.yaml`, затем в `checks/metrics/common/<artifact_type>/<group>.yaml`. Автоматического подключения всех проверок по типу файла нет.
+Тип файла автоматически выбирает процессор. Поле `processor` нужно только для нестандартного override.
 
-## YAML-метрики и функциональные обработчики
-
-Пример `checks/metrics/sample_scenario/quality.yaml`:
+Группа метрик:
 
 ```yaml
-id: quality
-processor: text
+id: readability
 phase: universal
+weight: 1
 checks:
-  - kind: functional
-    metric: Качество исследования
-    handler: sample_domain/sample_check
+  - kind: function
+    metric: Читаемость
+    handler: pptx/rendered_photos/text_background_contrast
     artifacts: [final]
-    options:
-      min_sources: 3
-    text: Проверка источников
-
-  - kind: text
-    metric: Качество исследования
-    text: |-
-      Есть ли выводы, ограничения и ссылки на источники?
+    text: Проверка контраста
 ```
 
-- `handler` — точный путь относительно `checks/functional/` без `.py`.
-- `processor` — имя каталога с `processor.py`; на уровне группы служит значением по умолчанию для её проверок.
-- `options` — произвольная YAML-структура, доступная как `check.options`.
-- `phase: common` помещает группу перед индивидуальными `checks` кейса, `phase: universal` — после них.
-- Полные пути модулей позволяют иметь одинаковые имена файлов в разных доменах. Сокращённый handler по имени файла допустим только при отсутствии дублей.
-- Глобального `_HANDLERS` нет; новый модуль регистрировать не нужно.
+Вес можно задать также отдельной проверке в кейсе. Отсутствующий вес равен `1`; перед расчётом веса нормализуются до суммы `1`. Конфликтующие веса одной метрики отклоняются.
 
-Интерфейс проверки:
+## Единый Artifact
 
-```python
-def run(check, artifacts, photos, user_phrase=None, context=None):
-    ...
+```text
+Artifact
+  name, role, path, artifact_type
+  text
+  raw_structure
+  rendered_photos
+  tool_calls
+  results
 ```
 
-Параметр `context` необязателен. Обработчики с четырьмя аргументами также поддерживаются.
+Процессор заполняет нужные атрибуты через `process(artifact, attributes)`. Материализация выполняется один раз и только для атрибутов, необходимых выбранным проверкам.
 
-## Процессоры артефактов
+Каталог функционального handler определяет основной атрибут:
 
-Процессор находится в `checks/functional/<domain>/processor.py`:
+- `path/` → `artifact.path`;
+- `text/` → `artifact.text`;
+- сегмент `raw_structure` → `artifact.raw_structure`;
+- `rendered_photos/` → `artifact.rendered_photos`;
+- `tool_calls/` → `artifact.tool_calls` с input/output/error и терминальным состоянием.
 
-```python
-class Processor:
-    extensions = {".custom"}
+Дополнительные атрибуты объявляются `REQUIRES` в модуле. Результат проверки добавляется в `artifact.results` и затем попадает в XLSX.
 
-    def extract_text(self, path: str) -> str:
-        ...
+Типов два: `function` для Python и `llm` для judge. Для judge обязателен `input: text | raw_structure | rendered_photos | tool_call`. Процессор сериализует `raw_structure` в JSON-представление для judge.
 
-    def render(self, path: str, output_dir) -> list[str]:
-        ...
-```
-
-Фабрика сначала использует явный `processor` из YAML. Если он не задан, ищет процессор по расширению среди доступных `processor.py`. Для нового формата достаточно добавить новый домен с процессором; менять `evaluate.py` или judge не требуется.
-
-Встроенные процессоры:
-
-- `pptx` — PPTX;
-- `office` — DOCX/XLSX/PDF;
-- `text` — Markdown/TXT/JSON/CSV/HTML/SVG/log.
-
-`context.extract_text(path, check.processor)` вызывает нужный процессор. Общие проверки в `text/` именно поэтому работают и с Office, и с текстовыми файлами без импорта `python-pptx`. Специализированные проверки и helpers остаются в `pptx/`.
-
-Корневой `checks/functional/_helpers.py` содержит только универсальные `ok`/`unavailable` и построение XLSX-workbook. PPTX-helpers находятся в `checks/functional/pptx/_helpers.py`.
+Существующие процессоры переиспользуются по расширению. Для нового формата добавляется `checks/processors/processor_<name>.py` без изменений evaluator.
 
 ## Вложения и артефакты
 
 ```yaml
 attachments:
-  - name: template
-    path: assets/template.pptx
+  - name: source
+    path: assets/source.pptx
 
 artifacts:
   - name: extracted
-    type: .md
     stage: intermediate
-    processor: text
-    path: extracted.md
+    type: .md
+    path: "*-ref/*.md"
     required: true
   - name: deck
-    type: .pptx
     stage: final
-    processor: pptx
-    path: result.pptx
+    type: .pptx
+    path: "output/*.pptx"
     required: true
-
-checks:
-  - kind: functional
-    handler: sample_domain/sample_check
-    artifacts: [template, extracted]
-    text: Проверка промежуточного результата
 ```
 
-- Пути вложений считаются от каталога сценария и передаются только с исходным `user_phrase`, не с «Продолжить».
-- `stage` — `final` или `intermediate`; `type` — расширение; `path` — имя или glob относительно `work_dir`; `processor` переопределяет обработчик формата.
-- `artifacts` проверки принимает `source`/`attachments`, `intermediate`, `final` или имена артефактов. По умолчанию — `final`.
-- Промежуточный файл копируется при каждом подходящем событии в `intermediate_artifacts/`; версии и одинаковые basename не перезаписывают друг друга.
-- `origin_path` сохраняет исходный путь, `event_index` — номер события.
-- Каждый обязательный финальный артефакт проверяется отдельно. Пока все они не найдены, harness отправляет до семи «Продолжить».
-- Отсутствующий обязательный артефакт даёт FAILED. Пересекающиеся описания, из-за которых один файл соответствует нескольким именам, отклоняются с понятной ошибкой.
-- Для legacy-кейса с одним `artifact_type` и без `artifacts` создаётся одно финальное описание.
-- `--validate` принимает существующий файл, соответствующий одному финальному описанию. При нескольких финалах проверяется только переданный файл; остальные обязательные будут отмечены отсутствующими.
+- Пути вложений считаются от каталога сценария и передаются только с первым сообщением.
+- Пути/glob артефактов считаются от `work_dir`.
+- Проверка выбирает `source`, `intermediate`, `final`, `final_message` или конкретное имя.
+- Промежуточные версии сохраняются в snapshot’ах с `origin_path` и `event_index`.
+- Для прекращения «Продолжить» нужны все обязательные финалы.
 
-`context` предоставляет `select(selectors)`, `paths(selectors)`, `photos_for(paths)`, `processor_for(...)` и `extract_text(...)`.
+Файловый финал сначала ищется по пути из завершённого assistant-ответа. При отсутствии подходящего пути выполняется рекурсивный поиск. `uploads/` и исходные attachments исключены из финальных кандидатов.
+
+## Финальный ответ как результат
+
+Для сценария без файла:
+
+```yaml
+artifacts:
+  - name: final_message
+    stage: final
+    kind: message
+    required: true
+```
+
+Финальный assistant-текст становится `Artifact` с `kind=message`, `path=None` и текстом ответа. К нему работают function и llm-проверки через селектор `final_message`.
 
 ## Результаты
 
-Полный прогон:
-
 ```text
-runs/<yyyy-mm-dd_hh-mm>_<opencode_model>/
+runs/<timestamp>_<opencode_model>/
+  results.xlsx
+  one_number_result.txt
   run_<n>/<case_id>/
-    work_dir/
+    raw.log
+    agent.log
     intermediate_artifacts/
     render_artifact/
-    raw.log
-  results.xlsx
 ```
 
-Например: `runs/2026-10-15_15-40_deepseek_v4.1/run_1/GD-001/`. Provider из имени модели удаляется, недопустимые символы заменяются на `_`.
-
-Валидация использует `runs/<yyyy-mm-dd_hh-mm>/run_1/example/result.xlsx`, поскольку OpenCode в ней не участвует. Ошибки judge помечаются `ERROR` и не считаются вердиктом по артефакту.
+- `raw.log` — полный технический поток событий.
+- `agent.log` — компактная человекочитаемая последовательность.
+- XLSX содержит проверки, отдельные routing, список tools, время, суммарные токены и фактический контекст.
+- Routing сравнивает завершённый skill-вызов с `skill` кейса и не участвует в `S`.
+- `one_number_result.txt` содержит взвешенный `S`, расчёт каждой метрики, routing отдельно, среднее время и максимальный контекст.
+- Ошибки judge не входят в `pass/all`; при отсутствии достоверных метрик `S=NA`.
 
 ## Offline-проверки
 
@@ -200,4 +175,4 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3.12 -m example.run_test_agent --he
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3.12 -m example.run_test_agent --list-scenarios
 ```
 
-Тесты покрывают независимое добавление сценария и процессора, существующие 447 проверок, вложения, промежуточные версии, несколько финальных артефактов, CLI и имя каталога модели. OpenCode, реальная обработка вложений через desktop и VLLM не запускаются.
+OpenCode, реальная обработка вложений и VLLM как smoke-test не используются.

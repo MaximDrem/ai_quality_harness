@@ -1,10 +1,12 @@
 # Тест-кейс GD-004.
-# checks — только индивидуальные проверки кейса. Формат проверки:
-#   kind: text | vlm | functional (по умолчанию text)
-#   metric: имя метрики (необязательно)
-#   user_phrase: true/false — передавать ли user_phrase кейса судье (по умолчанию true)
+# metric_groups — группы из metrics/presentations/<группа>.yaml.
+# checks — индивидуальные проверки кейса:
+#   kind: llm | function (по умолчанию llm)
+#   metric: имя метрики; weight: её вес (по умолчанию 1)
+#   handler: Python-проверка относительно checks/functional/
+#   input (обязателен для llm): text | raw_structure | rendered_photos | tool_call
+#   options: параметры handler; user_phrase: передавать ли запрос судье
 #   text: многострочный текст проверки (строки склеиваются через пробел)
-# Общие проверки подключаются из checks/metrics/presentations/<группа>.yaml.
 id: GD-004
 user_phrase: |-
   Делаем питч для инвесторов — коротко, на 5 слайдов и строго в таком порядке: проблема, решение,
@@ -12,7 +14,6 @@ user_phrase: |-
   выдумывай. Точных данных по рынку у нас тоже нет, цифры бери ориентировочные и помечай как оценку.
 skill: presentation
 artifact_type: .pptx
-processor: pptx
 metric_groups:
   - sanity
   - readability
@@ -22,38 +23,43 @@ metric_groups:
   - text
   - content_language
 checks:
-- kind: functional
+- kind: function
   metric: Следование инструкции
   user_phrase: false
-  handler: pptx/instruction/slide_count
+  handler: pptx/raw_structure/slide_count
   options:
     condition: 5
   text: |-
     slide_count 5
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: порядок разделов (проблема → решение → рынок → бизнес-модель → ask). ИГНОРИРУЙ: оформление.
     Вопрос: структура и порядок соблюдены?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: один смысловой блок на слайд. ИГНОРИРУЙ: оформление. Вопрос: каждый слайд посвящён только
     одной теме?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: отсутствие выдуманных точных цифр рынка без пометки «оценка». ИГНОРИРУЙ: оформление. Вопрос:
     рыночные данные помечены как оценочные?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: использование плейсхолдера «Продукт X» вместо конкретного названия. ИГНОРИРУЙ: остальной
     текст. Вопрос: плейсхолдер использован?
-- kind: text
+- kind: llm
+  input: text
   metric: Контент и язык
   user_phrase: false
   text: |-

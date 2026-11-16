@@ -1,3 +1,5 @@
+"""Тесты CLI без сетевых side effects и с моделью в имени runs."""
+
 from __future__ import annotations
 
 import asyncio

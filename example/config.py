@@ -1,7 +1,8 @@
 """Пути, константы пайплайна и загрузка `.env`.
 
-Все выходные каталоги привязаны к корню репозитория (`TEST_AGENT_ROOT`),
-входные данные лежат внутри пакета (`example/data`, `example/checks`).
+Все выходные каталоги привязаны к корню проекта (`TEST_AGENT_ROOT`).
+Кейсы лежат в `example/data`, метрики — в `example/metrics`, код проверок и
+процессоры — в `example/checks`.
 `load_dotenv()` вызывается первым делом в CLI: конфиг судьи
 (`judge/client.py`) читает переменные окружения в момент импорта, поэтому
 `.env` должен быть в `os.environ` до него.
@@ -23,7 +24,7 @@ WORK_DIRS_DIR = TEST_AGENT_ROOT / "work_dirs"
 
 # Входные данные: тест-кейсы и отдельно описанные группы метрик.
 CASES_DIR = EXAMPLE_DIR / "data"
-METRICS_DIR = EXAMPLE_DIR / "checks" / "metrics"
+METRICS_DIR = EXAMPLE_DIR / "metrics"
 
 # Общий конфиг wsc, с которым работает desktop (~/.wsc). Headless
 # поднимается так же, как `bun run dev:desktop`; справочный путь.

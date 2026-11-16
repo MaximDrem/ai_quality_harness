@@ -1,3 +1,11 @@
+"""Сбор артефактов агента и их версий.
+
+Сопоставляет YAML-описания с файлами из событий и work_dir, сохраняет
+snapshot'ы промежуточных версий, исключает uploads и исходные вложения из
+финалов и создаёт виртуальный артефакт final_message. В каждый артефакт
+добавляет связанные завершённые вызовы инструментов с input/output/error.
+"""
+
 from __future__ import annotations
 
 import fnmatch
@@ -7,9 +15,14 @@ import shutil
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from .agent.events import paths_from_text, paths_from_tool_input, paths_from_tool_output
+from .agent.events import (
+    extract_final_message,
+    paths_from_text,
+    paths_from_tool_input,
+    paths_from_tool_output,
+)
 from .cases import artifact_specs, resolve_attachment_paths
-from .models import ArtifactContext, ArtifactSpec, CollectedArtifact, TestCase
+from .models import Artifact, ArtifactContext, ArtifactSpec, TestCase
 
 
 def _resolve_candidate(path: str, work_dir: Path) -> Optional[Path]:
@@ -26,6 +39,8 @@ def _resolve_candidate(path: str, work_dir: Path) -> Optional[Path]:
 
 
 def _matches(spec: ArtifactSpec, path: Path, work_dir: Path) -> bool:
+    if spec.kind == "message":
+        return False
     if spec.artifact_type and path.suffix.lower() != spec.artifact_type:
         return False
     if not spec.path:
@@ -59,7 +74,7 @@ class ArtifactCollector:
         self.case = case
         self.work_dir = work_dir.resolve()
         self.snapshot_dir = snapshot_dir
-        self.intermediate: List[CollectedArtifact] = []
+        self.intermediate: List[Artifact] = []
         self._seen_snapshots = set()
         names = [spec.name for spec in artifact_specs(case)]
         duplicates = sorted({name for name in names if names.count(name) > 1})
@@ -87,7 +102,7 @@ class ArtifactCollector:
         return paths
 
     def capture_event(self, event, event_index: int) -> None:
-        specs = artifact_specs(self.case, "intermediate")
+        specs = [spec for spec in artifact_specs(self.case, "intermediate") if spec.kind == "file"]
         if not specs:
             return
         paths = self._event_paths(event)
@@ -116,7 +131,7 @@ class ArtifactCollector:
                 snapshot = self.snapshot_dir / filename
                 shutil.copy2(path, snapshot)
                 self.intermediate.append(
-                    CollectedArtifact(
+                    Artifact(
                         path=str(snapshot),
                         role="intermediate",
                         name=spec.name,
@@ -127,21 +142,47 @@ class ArtifactCollector:
                     )
                 )
 
-    def _source_items(self) -> List[CollectedArtifact]:
+    def _source_items(self) -> List[Artifact]:
         paths = resolve_attachment_paths(self.case)
-        items: List[CollectedArtifact] = []
-        for attachment, path in zip(self.case.attachments, paths):
-            items.append(
-                CollectedArtifact(
-                    path=path,
-                    role="source",
-                    name=attachment.name,
-                    artifact_type=Path(path).suffix.lower(),
-                    origin_path=path,
-                    processor=self.case.processor,
-                )
+        return [
+            Artifact(
+                path=path,
+                role="source",
+                name=attachment.name,
+                artifact_type=Path(path).suffix.lower(),
+                origin_path=path,
+                processor=self.case.processor,
             )
-        return items
+            for attachment, path in zip(self.case.attachments, paths)
+        ]
+
+    def _final_message(self, result) -> Optional[Artifact]:
+        text, raw = extract_final_message(getattr(result, "events", []) or [])
+        if not text:
+            return None
+        return Artifact(
+            path=None,
+            role="final_message",
+            name="final_message",
+            kind="message",
+            text=text,
+            raw_structure=raw,
+        )
+
+    def _is_excluded_final(self, path: Path) -> bool:
+        try:
+            relative = path.relative_to(self.work_dir)
+            if relative.parts and relative.parts[0] == "uploads":
+                return True
+        except ValueError:
+            pass
+        for attachment in self.case.attachments:
+            source = Path(attachment.path)
+            if not source.is_absolute():
+                source = Path(self.case.case_dir) / source
+            if path == source.resolve():
+                return True
+        return False
 
     def _candidate_paths(self, result, output_paths: Iterable[str]) -> List[Path]:
         candidates = list(output_paths)
@@ -150,7 +191,12 @@ class ArtifactCollector:
         seen = set()
         for candidate in candidates:
             path = _resolve_candidate(candidate, self.work_dir)
-            if path is not None and path.is_file() and path not in seen:
+            if (
+                path is not None
+                and path.is_file()
+                and path not in seen
+                and not self._is_excluded_final(path)
+            ):
                 paths.append(path)
                 seen.add(path)
         if self.work_dir.is_dir():
@@ -158,59 +204,129 @@ class ArtifactCollector:
                 if not path.is_file() or path.stat().st_size <= 0:
                     continue
                 resolved = path.resolve()
-                if resolved not in seen:
+                if resolved not in seen and not self._is_excluded_final(resolved):
                     paths.append(resolved)
                     seen.add(resolved)
         return paths
+
+    def _explicit_final_paths(self, result) -> List[Path]:
+        message = self._final_message(result)
+        if message is None:
+            return []
+        paths: List[Path] = []
+        for candidate in paths_from_text(message.text):
+            path = _resolve_candidate(candidate, self.work_dir)
+            if path and path.is_file() and not self._is_excluded_final(path):
+                paths.append(path)
+        return paths
+
+    def _paths_for_spec(self, spec: ArtifactSpec, explicit: List[Path], fallback: List[Path]) -> List[Path]:
+        explicit_matches = [path for path in explicit if _matches(spec, path, self.work_dir)]
+        candidates = explicit_matches or fallback
+        return [path for path in candidates if _matches(spec, path, self.work_dir)]
+
+    def _tool_calls_for_path(self, result, target: Optional[Path]) -> List[dict]:
+        records: List[dict] = []
+        seen = set()
+        for event_index, event in enumerate(getattr(result, "events", []) or [], start=1):
+            part = (getattr(event, "properties", {}) or {}).get("part") or {}
+            for tool_call in getattr(event, "tool_calls", []) or []:
+                state = getattr(tool_call, "state", "")
+                if state not in ("completed", "error"):
+                    continue
+                call_key = (part.get("id") or f"event:{event_index}", getattr(tool_call, "tool", "unknown"), state)
+                if call_key in seen:
+                    continue
+                seen.add(call_key)
+                related = target is None
+                if target is not None:
+                    candidates = paths_from_tool_input(tool_call) + paths_from_tool_output(tool_call)
+                    related = any(
+                        _resolve_candidate(candidate, self.work_dir) == target
+                        for candidate in candidates
+                    )
+                if related:
+                    records.append({
+                        "event_index": event_index,
+                        "tool": getattr(tool_call, "tool", "unknown"),
+                        "state": state,
+                        "input": getattr(tool_call, "input", {}) or {},
+                        "output": getattr(tool_call, "output", "") or "",
+                        "error": getattr(tool_call, "error", "") or "",
+                        "is_skill": bool(getattr(tool_call, "is_skill", False)),
+                    })
+        return records
+
+    def _attach_tool_calls(self, result, items: List[Artifact]) -> None:
+        for artifact in items:
+            if artifact.role == "source":
+                continue
+            if artifact.kind == "message":
+                artifact.tool_calls = self._tool_calls_for_path(result, None)
+            elif artifact.path:
+                target = Path(artifact.origin_path or artifact.path).resolve()
+                artifact.tool_calls = self._tool_calls_for_path(result, target)
 
     def has_final(self, result, output_paths: Iterable[str]) -> bool:
         specs = artifact_specs(self.case, "final")
         if not specs:
             return False
-        paths = self._candidate_paths(result, output_paths)
+        message = self._final_message(result)
+        file_specs = [spec for spec in specs if spec.kind != "message"]
+        explicit = self._explicit_final_paths(result)
+        fallback = self._candidate_paths(result, output_paths)
         required = [spec for spec in specs if spec.required]
-        if not required:
-            return any(
-                _matches(spec, path, self.work_dir)
-                for spec in specs
-                for path in paths
-            )
-        return all(
-            any(_matches(spec, path, self.work_dir) for path in paths)
-            for spec in required
-        )
+        selected = required or specs
+
+        def present(spec: ArtifactSpec) -> bool:
+            if spec.kind == "message":
+                return bool(message and message.text.strip())
+            return bool(self._paths_for_spec(spec, explicit, fallback))
+
+        if required:
+            return all(present(spec) for spec in selected)
+        return any(present(spec) for spec in selected)
 
     def finalize(self, result, output_paths: Iterable[str]) -> ArtifactContext:
-        final: List[CollectedArtifact] = []
-        seen = set()
-        specs = artifact_specs(self.case, "final")
-        for path in self._candidate_paths(result, output_paths):
-            matches = [item for item in specs if _matches(item, path, self.work_dir)]
-            if len(matches) > 1:
-                names = [item.name for item in matches]
-                raise ValueError(f"Файл {path} одновременно соответствует артефактам {names}")
-            if not matches or str(path) in seen:
-                continue
-            spec = matches[0]
-            seen.add(str(path))
-            final.append(
-                CollectedArtifact(
-                    path=str(path),
-                    role="final",
-                    name=spec.name,
-                    artifact_type=spec.artifact_type or path.suffix.lower(),
-                    origin_path=str(path),
-                    processor=spec.processor,
+        final: List[Artifact] = []
+        owners = {}
+        specs = [spec for spec in artifact_specs(self.case, "final") if spec.kind != "message"]
+        explicit = self._explicit_final_paths(result)
+        fallback = self._candidate_paths(result, output_paths)
+        for spec in specs:
+            for path in self._paths_for_spec(spec, explicit, fallback):
+                key = str(path)
+                if owners.get(key, spec.name) != spec.name:
+                    raise ValueError(
+                        f"Файл {path} одновременно соответствует артефактам "
+                        f"{[owners[key], spec.name]}"
+                    )
+                if key in owners:
+                    continue
+                owners[key] = spec.name
+                final.append(
+                    Artifact(
+                        path=key,
+                        role="final",
+                        name=spec.name,
+                        artifact_type=spec.artifact_type or path.suffix.lower(),
+                        origin_path=key,
+                        processor=spec.processor,
+                    )
                 )
-            )
-        return ArtifactContext(items=self._source_items() + self.intermediate + final)
+        items = self._source_items() + self.intermediate + final
+        message = self._final_message(result)
+        if message is not None:
+            items.append(message)
+        self._attach_tool_calls(result, items)
+        return ArtifactContext(items=items)
 
 
 def validation_context(case: TestCase, artifact_path: str) -> ArtifactContext:
     path = Path(artifact_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Файл для валидации не найден: {path}")
-    specs = artifact_specs(case, "final")
+    specs = [spec for spec in artifact_specs(case, "final") if spec.kind != "message"]
     matches = [
         spec
         for spec in specs
@@ -222,7 +338,7 @@ def validation_context(case: TestCase, artifact_path: str) -> ArtifactContext:
         names = [spec.name for spec in matches]
         raise ValueError(f"Файл {path} одновременно соответствует артефактам {names}")
     spec = matches[0]
-    final = CollectedArtifact(
+    final = Artifact(
         path=str(path),
         role="final",
         name=spec.name,

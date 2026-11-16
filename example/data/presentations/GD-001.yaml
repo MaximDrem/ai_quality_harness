@@ -1,10 +1,12 @@
 # Тест-кейс GD-001.
-# checks — только индивидуальные проверки кейса. Формат проверки:
-#   kind: text | vlm | functional (по умолчанию text)
-#   metric: имя метрики (необязательно)
-#   user_phrase: true/false — передавать ли user_phrase кейса судье (по умолчанию true)
+# metric_groups — группы из metrics/presentations/<группа>.yaml.
+# checks — индивидуальные проверки кейса:
+#   kind: llm | function (по умолчанию llm)
+#   metric: имя метрики; weight: её вес (по умолчанию 1)
+#   handler: Python-проверка относительно checks/functional/
+#   input (обязателен для llm): text | raw_structure | rendered_photos | tool_call
+#   options: параметры handler; user_phrase: передавать ли запрос судье
 #   text: многострочный текст проверки (строки склеиваются через пробел)
-# Общие проверки подключаются из checks/metrics/presentations/<группа>.yaml.
 id: GD-001
 user_phrase: |-
   Сделай презентацию на 7 слайдов про преимущества перехода на гибридный формат работы. Мы компания
@@ -13,7 +15,6 @@ user_phrase: |-
   если приводишь цифры, помечай их как оценочные.
 skill: presentation
 artifact_type: .pptx
-processor: pptx
 metric_groups:
   - sanity
   - readability
@@ -23,37 +24,42 @@ metric_groups:
   - text
   - content_language
 checks:
-- kind: functional
+- kind: function
   metric: Следование инструкции
   user_phrase: false
-  handler: pptx/instruction/slide_count
+  handler: pptx/raw_structure/slide_count
   options:
     condition: 7
   text: |-
     slide_count 7
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: наличие всех 7 смысловых блоков (титульный, проблема, преимущества, риски, рекомендации, план
     внедрения, заключение). ИГНОРИРУЙ: оформление, цифры. Вопрос: все 7 разделов присутствуют?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: отсутствие выдуманных точных цифр без пометки «оценочно»/«примерно». ИГНОРИРУЙ: оформление.
     Вопрос: все количественные данные либо помечены как оценка, либо отсутствуют?
-- kind: text
+- kind: llm
+  input: text
   metric: Контент и язык
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: деловой стиль текста. ИГНОРИРУЙ: вёрстку, цифры. Вопрос: отсутствует ли разговорная лексика,
     выдержан ли деловой тон?
-- kind: text
+- kind: llm
+  input: text
   metric: Контент и язык
   user_phrase: false
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: количество буллетов на слайд. ИГНОРИРУЙ: содержание буллетов. Вопрос: на каждом слайде ≤7
     буллетов (включая заголовок как элемент)?
-- kind: text
+- kind: llm
+  input: text
   metric: Следование инструкции
   text: |-
     ОЦЕНИВАЙ ТОЛЬКО: упоминание контекста компании на 300 человек. ИГНОРИРУЙ: оформление. Вопрос: контент

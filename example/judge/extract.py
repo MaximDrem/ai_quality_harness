@@ -1,4 +1,4 @@
-"""Извлечение текста из Office-артефактов для text-проверок судьи.
+"""Извлечение Office-текста и совместимость с процессорами Artifact.
 
 Текст достаётся из XML zip-архива (pptx/docx) или через openpyxl (xlsx) с
 маркерами границ `=== СЛАЙД N ===` — иначе судья приписывает строки
@@ -192,9 +192,17 @@ def _parse_office_artifact_text(artifact_path: str) -> str:
 
 
 def parse_artifact_text(artifact_path: str, processor: str = "") -> str:
+    from ..models import Artifact
     from ..processors import get_processor
 
-    return get_processor(processor, artifact_path).extract_text(artifact_path)
+    artifact = Artifact(
+        path=artifact_path,
+        role="final",
+        artifact_type=Path(artifact_path).suffix.lower(),
+        processor=processor,
+    )
+    get_processor(processor, artifact_path).process(artifact, {"text"})
+    return artifact.text
 
 
 def parse_artifacts_text(artifacts: Sequence[str], processor: str = "", context=None) -> str:

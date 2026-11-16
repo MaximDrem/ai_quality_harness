@@ -1,0 +1,17 @@
+# Общие базовые проверки XLSX; применяются только при явном выборе группы.
+# weight по умолчанию равен 1; handler задаётся относительно checks/functional/.
+id: sanity
+phase: common
+checks:
+- kind: function
+  metric: Функциональные
+  user_phrase: false
+  handler: path/file_exists
+  text: |-
+    file_exists
+- kind: function
+  metric: Функциональные
+  user_phrase: false
+  handler: rendered_photos/file_renderable
+  text: |-
+    render_success

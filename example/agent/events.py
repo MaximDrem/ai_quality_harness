@@ -1,7 +1,7 @@
 """Разбор событий агента: скилы/тулы, артефакты, токены, ошибки.
 
-Работает с «сырыми» событиями `client.agent_client`; сам клиент не
-импортирует — модуль используется и без установленного `client/`.
+Работает с событиями нового `client`, не запуская клиент сам. Дополнительно
+извлекает завершённый multipart final_message и фактический размер контекста.
 """
 from __future__ import annotations
 
@@ -38,6 +38,8 @@ def collect_skills_tools(events: list) -> tuple[List[str], List[str]]:
             )
             if not is_skill:
                 _push(raw_tool, tools)
+                continue
+            if tc.state != "completed":
                 continue
             name = None
             if isinstance(tc.input, dict):
@@ -125,6 +127,60 @@ def collect_tokens(events) -> Dict[str, int]:
         tokens["reasoning"] += int(t.get("reasoning") or 0)
         tokens["total"] += int(t.get("total") or 0)
     return tokens
+
+
+def collect_context_usage(events) -> Dict[str, float]:
+    result: Dict[str, float] = {}
+    for event in events:
+        if getattr(event, "type", "") != "session.context.usage":
+            continue
+        properties = getattr(event, "properties", {}) or {}
+        if isinstance(properties, dict) and properties.get("size") is not None:
+            result = {
+                "tokens": int(properties.get("size") or 0),
+                "limit": int(properties.get("threshold") or 0),
+                "percent": float(properties.get("percent") or 0),
+            }
+    return result
+
+
+def extract_final_message(events) -> tuple[str, Dict[str, Any]]:
+    completed = {}
+    selected_id = None
+    for event in events:
+        if getattr(event, "type", "") != "message.updated":
+            continue
+        info = (getattr(event, "properties", {}) or {}).get("info") or {}
+        if (
+            info.get("role") == "assistant"
+            and info.get("finish") == "stop"
+            and info.get("time", {}).get("completed")
+        ):
+            selected_id = info.get("id")
+            completed[selected_id] = info
+    if selected_id is None:
+        return "", {}
+    parts = {}
+    for index, event in enumerate(events):
+        if getattr(event, "type", "") != "message.part.updated":
+            continue
+        part = (getattr(event, "properties", {}) or {}).get("part") or {}
+        if (
+            part.get("messageID") == selected_id
+            and part.get("type") == "text"
+            and part.get("text")
+        ):
+            part_id = part.get("id") or f"index:{index}"
+            first_index = parts.get(part_id, (index, None, None))[0]
+            parts[part_id] = (first_index, part["text"], part)
+    if not parts:
+        return "", {}
+    ordered = sorted(parts.values(), key=lambda item: item[0])
+    text = "\n".join(item[1] for item in ordered)
+    return text, {
+        "message": completed[selected_id],
+        "parts": [item[2] for item in ordered],
+    }
 
 
 def extract_artifacts(res, work_dir: Path, output_paths: List[str], expected_type: str) -> List[str]:

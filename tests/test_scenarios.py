@@ -1,3 +1,5 @@
+"""Тесты автодiscovery сценариев, YAML-групп, handlers и весов."""
+
 from __future__ import annotations
 
 import tempfile
@@ -8,7 +10,7 @@ from unittest.mock import patch
 from example.cases import available_scenarios, build_check_list, load_test_cases
 from example.checks.functional import _load_handler, clear_handler_cache, run_functional_check
 from example.evaluate import case_for_validate
-from example.models import Check
+from example.models import Artifact, ArtifactContext, Check
 from example.run_test_agent import _parse_args, model_slug
 
 
@@ -32,8 +34,11 @@ class ScenarioTests(unittest.TestCase):
             checks = build_check_list(case)
             self.assertEqual(len(checks), expected[case.id])
             for check in checks:
-                if check.kind == "functional":
+                if check.kind == "function":
                     self.assertTrue(callable(_load_handler(check.handler or check.text.split()[0])))
+                else:
+                    self.assertEqual(check.kind, "llm")
+                    self.assertIn(check.input, {"text", "raw_structure", "rendered_photos", "tool_call"})
 
     def test_scenarios_are_discovered_from_directories(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -53,11 +58,11 @@ class ScenarioTests(unittest.TestCase):
             data_dir.mkdir(parents=True)
             metrics_dir.mkdir(parents=True)
             (metrics_dir / "layout.yaml").write_text(
-                "phase: universal\nchecks:\n- kind: text\n  metric: Layout\n  text: selected\n",
+                "phase: universal\nweight: 2\nchecks:\n- kind: llm\n  input: text\n  metric: Layout\n  text: selected\n",
                 encoding="utf-8",
             )
             (metrics_dir / "style.yaml").write_text(
-                "phase: universal\nchecks:\n- kind: text\n  metric: Style\n  text: not selected\n",
+                "phase: universal\nchecks:\n- kind: llm\n  input: text\n  metric: Style\n  text: not selected\n",
                 encoding="utf-8",
             )
             (data_dir / "one.yaml").write_text(
@@ -65,13 +70,17 @@ class ScenarioTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (data_dir / "two.yaml").write_text(
-                "id: two\nartifact_type: .pptx\nchecks:\n- kind: text\n  text: own\n",
+                "id: two\nartifact_type: .pptx\nchecks:\n- kind: llm\n  input: text\n  text: own\n  metric: Standalone\n  weight: 0.5\n",
                 encoding="utf-8",
             )
             with patch("example.cases.METRICS_DIR", root / "metrics"):
                 cases = load_test_cases(cases_dir=str(data_dir), scenario="demo")
-                self.assertEqual([check.text for check in build_check_list(cases[0])], ["selected"])
-                self.assertEqual([check.text for check in build_check_list(cases[1])], ["own"])
+                selected = build_check_list(cases[0])
+                standalone = build_check_list(cases[1])
+                self.assertEqual([check.text for check in selected], ["selected"])
+                self.assertEqual(selected[0].weight, 2)
+                self.assertEqual([check.text for check in standalone], ["own"])
+                self.assertEqual(standalone[0].weight, 0.5)
 
     def test_validation_respects_case_and_default_groups(self):
         with_case = case_for_validate("deck.pptx", "GD-001", None)
@@ -82,10 +91,10 @@ class ScenarioTests(unittest.TestCase):
     def test_functional_handler_is_discovered_without_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "custom_metric").mkdir()
-            (root / "custom_metric" / "echo.py").write_text(
+            (root / "text").mkdir()
+            (root / "text" / "echo.py").write_text(
                 "from example.models import CheckResult\n"
-                "def run(check, artifacts, photos, user_phrase=None, context=None):\n"
+                "def run(check, artifacts, user_phrase=None, context=None):\n"
                 "    return CheckResult(check=check, success=True, reason=check.options['value'])\n",
                 encoding="utf-8",
             )
@@ -94,20 +103,38 @@ class ScenarioTests(unittest.TestCase):
                 clear_handler_cache()
                 check = Check(
                     text="custom check",
-                    kind="functional",
-                    handler="custom_metric/echo",
+                    kind="function",
+                    handler="text/echo",
                     options={"value": "loaded"},
                 )
-                result = run_functional_check(check, [], [])
+                artifact = Artifact(path=None, role="final", kind="message", text="text")
+                result = run_functional_check(check, ArtifactContext(items=[artifact]))
                 self.assertTrue(result.success)
                 self.assertEqual(result.reason, "loaded")
+                self.assertEqual(len(artifact.results), 1)
             clear_handler_cache()
 
+    def test_llm_requires_explicit_input_and_old_kinds_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "missing.yaml").write_text(
+                "id: missing\nartifact_type: .md\nchecks:\n- kind: llm\n  text: no input\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "input обязателен"):
+                load_test_cases(cases_dir=str(root))
+            (root / "missing.yaml").write_text(
+                "id: old\nartifact_type: .md\nchecks:\n- kind: text\n  text: old kind\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "kind должен быть llm или function"):
+                load_test_cases(cases_dir=str(root))
+
     def test_cli_auth_skills_and_model_slug(self):
-        args = _parse_args(["--auth-mode", "prod", "--skills-dir", "/tmp/config", "--scenario", "deep_research"])
+        args = _parse_args(["--auth-mode", "prod", "--skills-dir", "/tmp/config", "--scenario", "sample_scenario"])
         self.assertEqual(args.auth_mode, "prod")
         self.assertEqual(args.skills_dir, "/tmp/config")
-        self.assertEqual(args.scenario, "deep_research")
+        self.assertEqual(args.scenario, "sample_scenario")
         self.assertEqual(model_slug("gigachat/deepseek-v4.1"), "deepseek_v4.1")
         self.assertEqual(model_slug("provider/a/b"), "b")
 

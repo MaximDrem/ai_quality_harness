@@ -1,3 +1,10 @@
+"""Загрузка сценариев, YAML-кейсов и групп метрик.
+
+Кейсы читаются из data/<scenario>/, группы — из metrics/<scenario>/.
+Собранный чек-лист содержит явно выбранные группы и индивидуальные проверки
+с наследованием processor и weight.
+"""
+
 from __future__ import annotations
 
 import json
@@ -75,15 +82,35 @@ def _as_str_list(value: Any) -> List[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _as_weight(value: Any, source: str) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        weight = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{source}: weight должен быть числом") from error
+    if weight < 0:
+        raise ValueError(f"{source}: weight не может быть отрицательным")
+    return weight
+
+
 def check_from_entry(entry: Any, source: str) -> Check:
     if not isinstance(entry, dict):
         raise ValueError(f"{source}: проверка должна быть YAML-структурой")
     options = entry.get("options") or {}
     if not isinstance(options, dict):
         raise ValueError(f"{source}: options проверки должны быть структурой")
+    kind = str(entry.get("kind") or "llm").strip().lower()
+    input_name = str(entry.get("input") or "").strip()
+    if kind not in ("llm", "function"):
+        raise ValueError(f"{source}: kind должен быть llm или function")
+    if kind == "llm" and input_name not in ("text", "raw_structure", "rendered_photos", "tool_call"):
+        raise ValueError(
+            f"{source}: для llm input обязателен: text/raw_structure/rendered_photos/tool_call"
+        )
     return Check(
         text=_flatten_check_text(entry.get("text")),
-        kind=str(entry.get("kind") or "text").strip().lower(),
+        kind=kind,
         metric=str(entry.get("metric") or "").strip(),
         use_user_phrase=_as_bool(entry.get("user_phrase"), True),
         single_slide=_as_bool(entry.get("single_slide"), False),
@@ -91,6 +118,8 @@ def check_from_entry(entry: Any, source: str) -> Check:
         artifacts=_as_str_list(entry.get("artifacts")),
         options=dict(options),
         processor=str(entry.get("processor") or "").strip(),
+        weight=_as_weight(entry.get("weight"), source),
+        input=input_name,
     )
 
 
@@ -114,13 +143,18 @@ def _artifact_from_entry(entry: Any, source: str, index: int) -> ArtifactSpec:
     if stage not in ("final", "intermediate"):
         raise ValueError(f"{source}: stage артефакта должен быть final или intermediate")
     name = str(entry.get("name") or f"{stage}_{index}").strip()
+    kind = str(entry.get("kind") or "file").strip().lower()
+    if kind not in ("file", "message"):
+        raise ValueError(f"{source}: kind артефакта должен быть file или message")
+    raw_type = str(entry.get("type") or entry.get("artifact_type") or "")
     return ArtifactSpec(
         name=name,
-        artifact_type=normalize_artifact_type(str(entry.get("type") or entry.get("artifact_type") or "")),
+        artifact_type=normalize_artifact_type(raw_type) if kind == "file" else raw_type,
         path=str(entry.get("path") or "").strip(),
         stage=stage,
         required=_as_bool(entry.get("required"), True),
         processor=str(entry.get("processor") or "").strip(),
+        kind=kind,
     )
 
 
@@ -196,12 +230,19 @@ def _load_metric_group(case: TestCase, name: str) -> Tuple[str, str, List[Check]
     if phase not in ("common", "universal"):
         raise ValueError(f"{path}: phase должен быть common или universal")
     processor = str(raw.get("processor") or "").strip()
+    weight = _as_weight(raw.get("weight"), str(path))
     checks = [
         check_from_entry(item, f"{path}#checks")
         for item in (raw.get("checks") or [])
     ]
-    if processor:
-        checks = [replace(check, processor=check.processor or processor) for check in checks]
+    checks = [
+        replace(
+            check,
+            processor=check.processor or processor,
+            weight=check.weight if check.weight is not None else weight,
+        )
+        for check in checks
+    ]
     return phase, processor, checks
 
 
@@ -217,6 +258,8 @@ def _check_identity(check: Check) -> str:
             "artifacts": check.artifacts,
             "options": check.options,
             "processor": check.processor,
+            "weight": check.weight,
+            "input": check.input,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -234,9 +277,24 @@ def build_check_list(
         phase, _processor, checks = _load_metric_group(case, name)
         target = common if phase == "common" else universal
         target.extend(checks)
-    individual = list(case.check_list)
-    if case.processor:
-        individual = [replace(check, processor=check.processor or case.processor) for check in individual]
+    metric_weights: Dict[str, float] = {}
+    for check in common + universal:
+        if check.metric and check.weight is not None:
+            if check.metric in metric_weights and metric_weights[check.metric] != check.weight:
+                raise ValueError(f"Конфликт weight для метрики {check.metric!r}")
+            metric_weights[check.metric] = check.weight
+    individual = [
+        replace(
+            check,
+            processor=check.processor or case.processor,
+            weight=(
+                metric_weights.get(check.metric)
+                if check.weight is None
+                else check.weight
+            ),
+        )
+        for check in case.check_list
+    ]
     result = (common if include_common else []) + individual
     if include_universal:
         result += universal
@@ -284,6 +342,8 @@ def artifact_specs(case: TestCase, stage: Optional[str] = None) -> List[Artifact
     ]
     if not specs and case.artifact_type and stage in (None, "final"):
         specs = [ArtifactSpec(name="final", artifact_type=case.artifact_type, processor=case.processor)]
+    if not specs and any("final_message" in check.artifacts for check in case.check_list):
+        specs = [ArtifactSpec(name="final_message", stage="final", kind="message")]
     if stage is not None:
         return [spec for spec in specs if spec.stage == stage]
     return specs

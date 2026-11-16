@@ -1,20 +1,21 @@
 """Оркестрация судейства: run_judge и посайдовые режимы.
 
-Проверки text/vlm из чек-листа кейса идут параллельно, число
-одновременных запросов к vLLM ограничено JUDGE_MAX_CONCURRENCY.
-Проверки с `single_slide: true` судятся по одному слайду за запрос,
-вердикты агрегируются: FAIL, если упал хотя бы один слайд.
+Judge выбирает Artifact по YAML и поддерживает text, rendered_photos,
+tool_calls и сериализованный raw_structure через необязательное поле input.
+Число запросов к vLLM ограничено JUDGE_MAX_CONCURRENCY.
+В single_slide режиме FAIL агрегируется по слайдам. Результат записывается
+в artifact.results, включая виртуальный final_message.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import List, Optional, Tuple
 
 from ..config import JUDGE_TEXT_MAX_CHARS
-from ..models import ArtifactContext, Check, CheckResult, TestCase
+from ..models import Artifact, ArtifactContext, Check, CheckResult, TestCase
 from .client import JUDGE_MAX_CONCURRENCY, judge_images, judge_text
-from .extract import parse_artifacts_text
 
 
 def _judger_error_result(check: Check, message: str) -> CheckResult:
@@ -160,12 +161,19 @@ async def _judge_vlm(
 async def _judge_text(
     check: Check,
     user_instruction: Optional[str],
-    artifacts: List[str],
+    artifacts: List[Artifact],
     semaphore: asyncio.Semaphore,
-    context: Optional[ArtifactContext] = None,
+    text_override: Optional[str] = None,
+    source_override: Optional[str] = None,
 ) -> CheckResult:
-    """Текстовая проверка по распарсенному тексту артефактов."""
-    text = parse_artifacts_text(artifacts, processor=check.processor, context=context)
+    if text_override is None:
+        chunks = []
+        for artifact in artifacts:
+            label = artifact.path or artifact.name
+            chunks.append(f"--- {label} ---\n{artifact.text}")
+        text = "\n\n".join(chunks)
+    else:
+        text = text_override
     if not text.strip():
         return CheckResult(
             check=check,
@@ -174,8 +182,7 @@ async def _judge_text(
             mode=check.mode,
             source="—",
         )
-    if check.single_slide:
-        # Каждый слайд судится отдельным запросом.
+    if check.single_slide and text_override is None:
         return await _judge_text_by_slides(check, user_instruction, text, semaphore)
     async with semaphore:
         verdict = await judge_text(
@@ -188,49 +195,77 @@ async def _judge_text(
         success=_is_pass(verdict),
         reason=verdict.reason,
         mode=check.mode,
-        source=f"текст: {len(text)} симв.",
+        source=source_override or f"текст: {len(text)} симв.",
     )
+
+
+def _attach_result(check: Check, result: CheckResult, selected: List[Artifact], attribute: str) -> CheckResult:
+    result.input_attribute = attribute
+    result.input_paths = [artifact.path for artifact in selected if artifact.path]
+    if selected:
+        primary = selected[-1]
+        result.artifact_path = primary.path
+        primary.results.append(result)
+    return result
 
 
 async def _judge_one(
     check: Check,
     case: TestCase,
-    artifacts: List[str],
-    photos: List[str],
+    context: ArtifactContext,
     semaphore: asyncio.Semaphore,
-    context: Optional[ArtifactContext] = None,
 ) -> CheckResult:
-    """Выполнить одну проверку (text|vlm) через судью-LLM."""
+    selected = context.select(check.artifacts or ["final"])
+    attribute = "tool_calls" if check.input == "tool_call" else check.input
     try:
-        # user_phrase передаётся судье только если это разрешено полем
-        # user_phrase проверки.
         user_instruction = case.user_phrase if check.use_user_phrase else None
-        if context is not None:
-            artifacts = context.paths(check.artifacts or ["final"])
-            photos = context.photos_for(artifacts)
-        if check.kind == "vlm":
-            return await _judge_vlm(check, user_instruction, photos, semaphore)
-        return await _judge_text(check, user_instruction, artifacts, semaphore, context)
-    except Exception as e:  # судья упал — не валим кейс
-        return _judger_error_result(check, f"ошибка судьи: {e}")
+        if attribute not in {"text", "raw_structure", "rendered_photos", "tool_calls"}:
+            raise ValueError(f"Неподдерживаемый LLM input: {attribute}")
+        context.materialize(selected, attribute, check.processor)
+        if attribute == "rendered_photos":
+            photos = [photo for artifact in selected for photo in artifact.rendered_photos]
+            result = await _judge_vlm(check, user_instruction, photos, semaphore)
+        elif attribute == "tool_calls":
+            chunks = [
+                f"--- {artifact.path or artifact.name} ---\n"
+                + json.dumps(artifact.tool_calls, ensure_ascii=False, default=str)
+                for artifact in selected
+            ]
+            result = await _judge_text(
+                check,
+                user_instruction,
+                selected,
+                semaphore,
+                text_override="\n\n".join(chunks),
+                source_override=f"tool_calls: {sum(len(a.tool_calls) for a in selected)}",
+            )
+        elif attribute == "raw_structure":
+            chunks = [
+                f"--- {artifact.path or artifact.name} ---\n"
+                + context.serialize_raw_structure(artifact, check.processor)
+                for artifact in selected
+            ]
+            result = await _judge_text(
+                check,
+                user_instruction,
+                selected,
+                semaphore,
+                text_override="\n\n".join(chunks),
+                source_override=f"raw_structure: {len(chunks)} артефактов",
+            )
+        else:
+            result = await _judge_text(check, user_instruction, selected, semaphore)
+        return _attach_result(check, result, selected, attribute)
+    except Exception as error:
+        result = _judger_error_result(check, f"ошибка судьи: {error}")
+        return _attach_result(check, result, selected, attribute)
 
 
-async def run_judge(
-    case: TestCase,
-    artifacts: List[str],
-    photos: List[str],
-    context: Optional[ArtifactContext] = None,
-) -> List[CheckResult]:
-    """Прогнать text/vlm-проверки чек-листа кейса через судью-LLM.
-
-    `functional`-проверки сюда не попадают — их считает код
-    (`example.checks.functional`).
-    """
-    checks = [c for c in case.check_list if c.kind != "functional"]
+async def run_judge(case: TestCase, context: ArtifactContext) -> List[CheckResult]:
+    checks = [check for check in case.check_list if check.kind == "llm"]
     if not checks:
         return []
-
     semaphore = asyncio.Semaphore(JUDGE_MAX_CONCURRENCY)
     return await asyncio.gather(
-        *(_judge_one(c, case, artifacts, photos, semaphore, context) for c in checks)
+        *(_judge_one(check, case, context, semaphore) for check in checks)
     )

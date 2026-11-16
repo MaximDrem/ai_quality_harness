@@ -1,3 +1,5 @@
+"""Mock-тест AgentSession: auth, skills_dir, вложения, события и логи."""
+
 from __future__ import annotations
 
 import asyncio
@@ -83,6 +85,8 @@ class RunCaseTests(unittest.TestCase):
             self.assertEqual(len(context.select(["analysis"])), 1)
             self.assertEqual(context.paths(["template"]), [str(source)])
             self.assertTrue(context.paths(["final"])[0].endswith("result.pptx"))
+            self.assertTrue((root / "runs" / "run_1" / "style" / "raw.log").is_file())
+            self.assertIn("TOOL write", (root / "runs" / "run_1" / "style" / "agent.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
