@@ -2,6 +2,7 @@
 
 Judge выбирает Artifact по YAML и поддерживает text, rendered_photos,
 tool_calls и сериализованный raw_structure через необязательное поле input.
+Профиль промптов и схемы выбирается по case.scenario во всех режимах.
 Число запросов к vLLM ограничено JUDGE_MAX_CONCURRENCY.
 В single_slide режиме FAIL агрегируется по слайдам. Результат записывается
 в artifact.results, включая виртуальный final_message.
@@ -69,6 +70,7 @@ async def _judge_by_slides(
     user_instruction: Optional[str],
     photos: List[str],
     semaphore: asyncio.Semaphore,
+    scenario: str,
 ) -> CheckResult:
     """Судить vlm-проверку по одному слайду за запрос."""
     async def _one(idx: int, photo: str) -> Tuple[str, object]:
@@ -78,6 +80,7 @@ async def _judge_by_slides(
                 user_instruction=user_instruction,
                 check_instruction=check.text,
                 first_slide=idx,
+                scenario=scenario,
             )
             return f"слайд {idx}", verdict
 
@@ -93,6 +96,7 @@ async def _judge_text_by_slides(
     user_instruction: Optional[str],
     text: str,
     semaphore: asyncio.Semaphore,
+    scenario: str,
 ) -> CheckResult:
     """Судить text-проверку по одному слайду за запрос.
 
@@ -116,6 +120,7 @@ async def _judge_text_by_slides(
                 agent_text=body,
                 user_instruction=user_instruction,
                 check_instruction=check.text,
+                scenario=scenario,
             )
             return (f"слайд {slide_no}" if slide_no is not None else None), verdict
 
@@ -129,6 +134,7 @@ async def _judge_vlm(
     user_instruction: Optional[str],
     photos: List[str],
     semaphore: asyncio.Semaphore,
+    scenario: str,
 ) -> CheckResult:
     """Визуальная проверка: вся колода одним запросом или по одному слайду."""
     if not photos:
@@ -141,13 +147,14 @@ async def _judge_vlm(
         )
     if check.single_slide:
         # Каждый слайд судится отдельным запросом.
-        return await _judge_by_slides(check, user_instruction, photos, semaphore)
+        return await _judge_by_slides(check, user_instruction, photos, semaphore, scenario)
     # Вся колода одним запросом — для проверок, оценивающих её целиком.
     async with semaphore:
         verdict = await judge_images(
             image_paths=photos,
             user_instruction=user_instruction,
             check_instruction=check.text,
+            scenario=scenario,
         )
     return CheckResult(
         check=check,
@@ -165,6 +172,7 @@ async def _judge_text(
     semaphore: asyncio.Semaphore,
     text_override: Optional[str] = None,
     source_override: Optional[str] = None,
+    scenario: str = "presentation",
 ) -> CheckResult:
     if text_override is None:
         chunks = []
@@ -183,12 +191,13 @@ async def _judge_text(
             source="—",
         )
     if check.single_slide and text_override is None:
-        return await _judge_text_by_slides(check, user_instruction, text, semaphore)
+        return await _judge_text_by_slides(check, user_instruction, text, semaphore, scenario)
     async with semaphore:
         verdict = await judge_text(
             agent_text=text[:JUDGE_TEXT_MAX_CHARS],
             user_instruction=user_instruction,
             check_instruction=check.text,
+            scenario=scenario,
         )
     return CheckResult(
         check=check,
@@ -217,6 +226,7 @@ async def _judge_one(
 ) -> CheckResult:
     selected = context.select(check.artifacts or ["final"])
     attribute = "tool_calls" if check.input == "tool_call" else check.input
+    scenario = case.scenario or "presentation"
     try:
         user_instruction = case.user_phrase if check.use_user_phrase else None
         if attribute not in {"text", "raw_structure", "rendered_photos", "tool_calls"}:
@@ -224,7 +234,7 @@ async def _judge_one(
         context.materialize(selected, attribute, check.processor)
         if attribute == "rendered_photos":
             photos = [photo for artifact in selected for photo in artifact.rendered_photos]
-            result = await _judge_vlm(check, user_instruction, photos, semaphore)
+            result = await _judge_vlm(check, user_instruction, photos, semaphore, scenario)
         elif attribute == "tool_calls":
             chunks = [
                 f"--- {artifact.path or artifact.name} ---\n"
@@ -238,6 +248,7 @@ async def _judge_one(
                 semaphore,
                 text_override="\n\n".join(chunks),
                 source_override=f"tool_calls: {sum(len(a.tool_calls) for a in selected)}",
+                scenario=scenario,
             )
         elif attribute == "raw_structure":
             chunks = [
@@ -252,9 +263,10 @@ async def _judge_one(
                 semaphore,
                 text_override="\n\n".join(chunks),
                 source_override=f"raw_structure: {len(chunks)} артефактов",
+                scenario=scenario,
             )
         else:
-            result = await _judge_text(check, user_instruction, selected, semaphore)
+            result = await _judge_text(check, user_instruction, selected, semaphore, scenario=scenario)
         return _attach_result(check, result, selected, attribute)
     except Exception as error:
         result = _judger_error_result(check, f"ошибка судьи: {error}")

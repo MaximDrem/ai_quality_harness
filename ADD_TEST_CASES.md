@@ -140,7 +140,20 @@ REQUIRES = {"raw_structure", "rendered_photos"}
 
 Для judge `input` обязателен: `text | raw_structure | rendered_photos | tool_call`.
 
-## 5. Процессоры
+## 5. Промпт judge
+
+По умолчанию используется `checks/llm/presentation/`. Для своего сценария создайте `checks/llm/<scenario>/__init__.py` и экспортируйте:
+
+```python
+SYSTEM_PROMPT = "..."
+build_text_prompt = ...
+build_vision_prompt = ...
+JudgeResult = ...
+```
+
+`build_text_prompt(agent_text, user_instruction, check_instruction)` и `build_vision_prompt(user_instruction, check_instruction, number_of_images)` вызываются при `--scenario <scenario>`. `JudgeResult` — Pydantic-модель structured output.
+
+## 6. Процессоры
 
 Существующий тип переиспользуется автоматически по расширению. Новый формат требует только `checks/processors/processor_<name>.py`:
 
@@ -161,7 +174,7 @@ class Processor:
 
 Процессор заполняет атрибуты, но не выбирает проверки.
 
-## 6. Финальный ответ без файла
+## 7. Финальный ответ без файла
 
 `final_message` доступен как виртуальный артефакт с текстом финального ответа:
 
@@ -182,13 +195,13 @@ checks:
 
 Файл в этом случае не требуется.
 
-## 7. Выбор файлового финала
+## 8. Выбор файлового финала
 
 Сначала проверяется путь из завершённого финального сообщения. Если подходящего пути нет, выполняется поиск по YAML glob внутри `work_dir`; затем отправляется «Продолжить». `uploads/` и исходные attachments не участвуют в выборе финала.
 
-## 8. Результаты
+## 9. Результаты
 
-Полный прогон создаёт `raw.log`, человекочитаемый `agent.log`, XLSX и `one_number_result.txt`. Routing и время отображаются отдельно и не входят в `S`.
+Полный прогон создаёт `raw.log`, человекочитаемый `agent.log`, XLSX и `one_number_result.txt`. Сначала вычисляется `S_case`, затем `S_scenario` как среднее валидных `S_case`. Routing и время отображаются отдельно и не входят в `S`.
 
 Offline-проверка:
 

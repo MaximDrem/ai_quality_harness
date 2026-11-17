@@ -5,11 +5,13 @@
 ленивый импорт в `example.evaluate`).
 
 Запросы детерминированы: temperature из env (по умолчанию 0) и
-фиксированный seed=42 — одинаковые входы дают одинаковый вердикт.
+фиксированный seed=42. SYSTEM_PROMPT, сборщики промптов и JudgeResult
+выбираются через get_llm_profile(scenario).
 """
 from __future__ import annotations
 
 import base64
+import functools
 import io
 import os
 import warnings
@@ -20,8 +22,7 @@ from PIL import Image
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
-from ..checks.llm.prompts import SYSTEM_PROMPT, build_text_prompt, build_vision_prompt
-from ..checks.llm.schema import JudgeResult
+from ..checks.llm import get_llm_profile
 
 # with_structured_output шумит «Pydantic serializer warnings» на каждый вызов,
 # хотя результат корректный. Подавляем.
@@ -92,22 +93,25 @@ def _make_base_llm(max_tokens: int) -> ChatOpenAI:
 
 _base_llm = _make_base_llm(MAX_TOKENS)
 
-judge_llm = _base_llm.with_structured_output(
-    JudgeResult,
-    method="json_schema",
-)
+@functools.lru_cache(maxsize=None)
+def _structured_llm(scenario: str):
+    profile = get_llm_profile(scenario)
+    return _base_llm.with_structured_output(
+        profile.JudgeResult,
+        method="json_schema",
+    )
 
 
-async def _ainvoke_judge(messages) -> JudgeResult:
+async def _ainvoke_judge(messages, scenario: str):
     """Вызов судьи; при усечённом ответе повторяем с лимитом ×4."""
     try:
-        return await judge_llm.ainvoke(messages)
+        return await _structured_llm(scenario).ainvoke(messages)
     except Exception as e:
         if "length limit" not in str(e):
             raise
-        # Свежий клиент с учетверённым бюджетом.
+        profile = get_llm_profile(scenario)
         llm_retry = _make_base_llm(MAX_TOKENS * 4).with_structured_output(
-            JudgeResult,
+            profile.JudgeResult,
             method="json_schema",
         )
         return await llm_retry.ainvoke(messages)
@@ -150,21 +154,23 @@ async def judge_text(
     agent_text: str,
     user_instruction: Optional[str],
     check_instruction: str,
-) -> JudgeResult:
+    scenario: str = "presentation",
+):
     """Оценить текст агента по одной проверке."""
     if not agent_text.strip():
         raise ValueError("agent_text cannot be empty")
-
-    prompt = build_text_prompt(
+    profile = get_llm_profile(scenario)
+    prompt = profile.build_text_prompt(
         agent_text=agent_text,
         user_instruction=user_instruction,
         check_instruction=check_instruction,
     )
     return await _ainvoke_judge(
         [
-            ("system", SYSTEM_PROMPT),
+            ("system", profile.SYSTEM_PROMPT),
             ("human", prompt),
-        ]
+        ],
+        scenario,
     )
 
 
@@ -173,7 +179,8 @@ async def judge_images(
     user_instruction: Optional[str],
     check_instruction: str,
     first_slide: int = 1,
-) -> JudgeResult:
+    scenario: str = "presentation",
+):
     """Проверить картинки. first_slide — номер первого изображения (для
     батчей, чтобы подписи «=== СЛАЙД N ===» были сквозными).
     """
@@ -181,8 +188,8 @@ async def judge_images(
         raise ValueError("image_paths cannot be empty")
 
     content: list[dict] = []
-
-    prompt = build_vision_prompt(
+    profile = get_llm_profile(scenario)
+    prompt = profile.build_vision_prompt(
         user_instruction=user_instruction,
         check_instruction=check_instruction,
         number_of_images=len(image_paths),
@@ -211,7 +218,8 @@ async def judge_images(
 
     return await _ainvoke_judge(
         [
-            ("system", SYSTEM_PROMPT),
+            ("system", profile.SYSTEM_PROMPT),
             message,
-        ]
+        ],
+        scenario,
     )

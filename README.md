@@ -33,6 +33,10 @@ example/
   metrics/<scenario>/<group>.yaml
   checks/
     llm/
+      presentation/
+        prompts.py
+        schema.py
+      <scenario>/
     processors/processor_<type>.py
     functional/
       path/
@@ -76,6 +80,10 @@ checks:
 ```
 
 Вес можно задать также отдельной проверке в кейсе. Отсутствующий вес равен `1`; перед расчётом веса нормализуются до суммы `1`. Конфликтующие веса одной метрики отклоняются.
+
+## Профиль judge
+
+Промпты и structured output выбираются по `--scenario`. Текущий профиль находится в `checks/llm/presentation/`; `presentations` является его alias. Новый сценарий добавляет `checks/llm/<scenario>/__init__.py` с `SYSTEM_PROMPT`, `build_text_prompt`, `build_vision_prompt` и `JudgeResult`. Изменять runner не требуется.
 
 ## Единый Artifact
 
@@ -164,7 +172,7 @@ runs/<timestamp>_<opencode_model>/
 - `agent.log` — компактная человекочитаемая последовательность.
 - XLSX содержит проверки, отдельные routing, список tools, время, суммарные токены и фактический контекст.
 - Routing сравнивает завершённый skill-вызов с `skill` кейса и не участвует в `S`.
-- `one_number_result.txt` содержит взвешенный `S`, расчёт каждой метрики, routing отдельно, среднее время и максимальный контекст.
+- `one_number_result.txt` содержит `S_case` для каждого кейса/run и `S_scenario` как среднее валидных `S_case`. Веса нормализуются внутри каждого кейса отдельно. Routing, среднее время и максимальный контекст выводятся отдельно.
 - Ошибки judge не входят в `pass/all`; при отсутствии достоверных метрик `S=NA`.
 
 ## Offline-проверки

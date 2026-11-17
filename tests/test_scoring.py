@@ -55,6 +55,7 @@ class ScoringTests(unittest.TestCase):
             text_path = Path(write_one_number_result([result], root / "one_number_result.txt"))
             text = text_path.read_text(encoding="utf-8")
             self.assertIn("S = 0.666667", text)
+            self.assertIn("[case case run 1] S_case = 0.666667", text)
             self.assertIn("routing = 0/1 (в S не участвует)", text)
             self.assertIn("average_agent_time_sec = 10.000", text)
             self.assertIn("max_context_percent = 61.0", text)
@@ -68,6 +69,33 @@ class ScoringTests(unittest.TestCase):
             self.assertTrue(any(row[6] == "tools" and "write, read" in row[8] for row in rows))
             self.assertTrue(any(row[6] == "context" and "120568/196608" in row[8] for row in rows))
             self.assertTrue(any(row[12] == "result.custom" and row[13] == "raw_structure" for row in rows))
+
+    def test_scenario_score_is_average_of_case_scores(self):
+        first = RunResult(
+            test_case=TestCase(id="first", user_phrase="", skill="", artifact_type=".md"),
+            routing_applicable=False,
+            check_results=[check_result("A", True, 1)],
+        )
+        second = RunResult(
+            test_case=TestCase(id="second", user_phrase="", skill="", artifact_type=".md"),
+            routing_applicable=False,
+            check_results=[
+                check_result("B", True, 1),
+                check_result("B", True, 1),
+                check_result("B", False, 1),
+                check_result("B", False, 1),
+            ],
+        )
+        errors_only = RunResult(
+            test_case=TestCase(id="errors", user_phrase="", skill="", artifact_type=".md"),
+            routing_applicable=False,
+            check_results=[check_result("Broken", False, 10, error="judge error")],
+        )
+        summary = calculate_one_number([first, second, errors_only])
+        self.assertEqual(summary["cases"][0]["score"], 1.0)
+        self.assertEqual(summary["cases"][1]["score"], 0.5)
+        self.assertIsNone(summary["cases"][2]["score"])
+        self.assertEqual(summary["score"], 0.75)
 
     def test_equal_weights_and_conflicts(self):
         result = RunResult(
