@@ -81,17 +81,25 @@ class ArtifactCollector:
         if duplicates:
             raise ValueError(f"Имена артефактов кейса {case.id} не уникальны: {duplicates}")
 
+    def declared_extensions(self) -> set[str]:
+        return {
+            spec.artifact_type.lower()
+            for spec in artifact_specs(self.case)
+            if spec.kind == "file" and spec.artifact_type
+        }
+
     def _event_paths(self, event) -> List[Path]:
+        allowed = self.declared_extensions()
         candidates: List[str] = []
         for tool_call in getattr(event, "tool_calls", None) or []:
             if getattr(tool_call, "state", "") != "completed":
                 continue
             candidates.extend(paths_from_tool_input(tool_call))
-            candidates.extend(paths_from_tool_output(tool_call))
+            candidates.extend(paths_from_tool_output(tool_call, allowed))
         for artifact in getattr(event, "artifacts", None) or []:
             candidates.append(getattr(artifact, "path", ""))
         for text in getattr(event, "text_outputs", None) or []:
-            candidates.extend(paths_from_text(getattr(text, "text", "")))
+            candidates.extend(paths_from_text(getattr(text, "text", ""), self.declared_extensions()))
         paths: List[Path] = []
         seen = set()
         for candidate in candidates:
@@ -210,11 +218,13 @@ class ArtifactCollector:
         return paths
 
     def _explicit_final_paths(self, result) -> List[Path]:
+        if not [spec for spec in artifact_specs(self.case, "final") if spec.kind != "message"]:
+            return []
         message = self._final_message(result)
         if message is None:
             return []
         paths: List[Path] = []
-        for candidate in paths_from_text(message.text):
+        for candidate in paths_from_text(message.text, self.declared_extensions()):
             path = _resolve_candidate(candidate, self.work_dir)
             if path and path.is_file() and not self._is_excluded_final(path):
                 paths.append(path)
@@ -240,7 +250,10 @@ class ArtifactCollector:
                 seen.add(call_key)
                 related = target is None
                 if target is not None:
-                    candidates = paths_from_tool_input(tool_call) + paths_from_tool_output(tool_call)
+                    candidates = (
+                        paths_from_tool_input(tool_call)
+                        + paths_from_tool_output(tool_call, self.declared_extensions())
+                    )
                     related = any(
                         _resolve_candidate(candidate, self.work_dir) == target
                         for candidate in candidates
@@ -273,8 +286,6 @@ class ArtifactCollector:
             return False
         message = self._final_message(result)
         file_specs = [spec for spec in specs if spec.kind != "message"]
-        explicit = self._explicit_final_paths(result)
-        fallback = self._candidate_paths(result, output_paths)
         required = [spec for spec in specs if spec.required]
         selected = required or specs
 
@@ -283,6 +294,12 @@ class ArtifactCollector:
                 return bool(message and message.text.strip())
             return bool(self._paths_for_spec(spec, explicit, fallback))
 
+        if not file_specs:
+            if required:
+                return all(present(spec) for spec in selected)
+            return any(present(spec) for spec in selected)
+        explicit = self._explicit_final_paths(result)
+        fallback = self._candidate_paths(result, output_paths)
         if required:
             return all(present(spec) for spec in selected)
         return any(present(spec) for spec in selected)
@@ -291,8 +308,8 @@ class ArtifactCollector:
         final: List[Artifact] = []
         owners = {}
         specs = [spec for spec in artifact_specs(self.case, "final") if spec.kind != "message"]
-        explicit = self._explicit_final_paths(result)
-        fallback = self._candidate_paths(result, output_paths)
+        explicit = self._explicit_final_paths(result) if specs else []
+        fallback = self._candidate_paths(result, output_paths) if specs else []
         for spec in specs:
             for path in self._paths_for_spec(spec, explicit, fallback):
                 key = str(path)

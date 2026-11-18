@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from example.cases import available_scenarios, build_check_list, load_test_cases
 from example.checks.functional import _load_handler, clear_handler_cache, run_functional_check
-from example.evaluate import case_for_validate
-from example.models import Artifact, ArtifactContext, Check
+from example.evaluate import case_for_validate, with_universal_checks
+from example.models import Artifact, ArtifactContext, Check, TestCase
 from example.run_test_agent import _parse_args, model_slug
 
 
@@ -113,6 +113,42 @@ class ScenarioTests(unittest.TestCase):
                 self.assertEqual(result.reason, "loaded")
                 self.assertEqual(len(artifact.results), 1)
             clear_handler_cache()
+
+    def test_case_must_declare_file_or_message_result(self):
+        no_output = TestCase(
+            id="no-output",
+            user_phrase="test",
+            skill="demo",
+            artifact_type="",
+        )
+        with self.assertRaisesRegex(ValueError, "не объявляет финальный результат"):
+            with_universal_checks(no_output)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data" / "demo"
+            metrics_dir = root / "metrics" / "demo"
+            data_dir.mkdir(parents=True)
+            metrics_dir.mkdir(parents=True)
+            (data_dir / "invalid.yaml").write_text(
+                "id: invalid\nartifact_type: ''\nartifacts:\n- name: any\n  stage: final\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "type или path"):
+                load_test_cases(cases_dir=str(data_dir))
+            (data_dir / "invalid.yaml").unlink()
+            (data_dir / "case.yaml").write_text(
+                "id: message\nuser_phrase: test\nmetric_groups: [answer]\nchecks: []\n",
+                encoding="utf-8",
+            )
+            (metrics_dir / "answer.yaml").write_text(
+                "phase: universal\nchecks:\n- kind: llm\n  input: text\n  artifacts: [final_message]\n  text: Ответ полный\n",
+                encoding="utf-8",
+            )
+            with patch("example.cases.METRICS_DIR", root / "metrics"):
+                case = load_test_cases(cases_dir=str(data_dir), scenario="demo")[0]
+                validated = with_universal_checks(case)
+                self.assertEqual(validated.check_list[0].artifacts, ["final_message"])
 
     def test_llm_requires_explicit_input_and_old_kinds_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

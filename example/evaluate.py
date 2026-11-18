@@ -18,6 +18,7 @@ from .cases import (
     build_check_list,
     load_test_cases,
     makedirs,
+    validate_case_output,
 )
 from .checks.functional import run_functional_checks
 from .config import CASES_DIR, RENDER_SUPPORTED, WORK_DIRS_DIR, case_runs_dir
@@ -205,7 +206,9 @@ async def evaluate_case(
 
 
 def with_universal_checks(case: TestCase) -> TestCase:
-    return replace(case, check_list=build_check_list(case, include_universal=True))
+    result = replace(case, check_list=build_check_list(case, include_universal=True))
+    validate_case_output(result)
+    return result
 
 
 def case_for_validate(

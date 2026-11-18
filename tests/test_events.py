@@ -5,7 +5,12 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from example.agent.events import collect_context_usage, collect_skills_tools, extract_final_message
+from example.agent.events import (
+    collect_context_usage,
+    collect_skills_tools,
+    extract_final_message,
+    paths_from_text,
+)
 
 
 def completed(message_id):
@@ -50,6 +55,13 @@ class EventTests(unittest.TestCase):
             )
         skills, _ = collect_skills_tools(events)
         self.assertEqual(skills, ["expected"])
+
+    def test_text_path_extraction_requires_declared_extensions(self):
+        text = "Используем node.js версии v1.2, сайт https://example.com/path, отчёт result.md"
+        self.assertEqual(paths_from_text(text), [])
+        self.assertEqual(paths_from_text(text, {"md"}), ["result.md"])
+        self.assertEqual(paths_from_text("вывод в result.custom", {"custom"}), ["result.custom"])
+        self.assertEqual(paths_from_text("вывод в result.custom", {"md"}), [])
 
     def test_idle_does_not_create_final_message_without_completed_assistant(self):
         events = [

@@ -147,10 +147,13 @@ def _artifact_from_entry(entry: Any, source: str, index: int) -> ArtifactSpec:
     if kind not in ("file", "message"):
         raise ValueError(f"{source}: kind артефакта должен быть file или message")
     raw_type = str(entry.get("type") or entry.get("artifact_type") or "")
+    artifact_path = str(entry.get("path") or "").strip()
+    if kind == "file" and not raw_type and not artifact_path:
+        raise ValueError(f"{source}: файловый артефакт должен объявлять type или path")
     return ArtifactSpec(
         name=name,
         artifact_type=normalize_artifact_type(raw_type) if kind == "file" else raw_type,
-        path=str(entry.get("path") or "").strip(),
+        path=artifact_path,
         stage=stage,
         required=_as_bool(entry.get("required"), True),
         processor=str(entry.get("processor") or "").strip(),
@@ -347,3 +350,12 @@ def artifact_specs(case: TestCase, stage: Optional[str] = None) -> List[Artifact
     if stage is not None:
         return [spec for spec in specs if spec.stage == stage]
     return specs
+
+
+def validate_case_output(case: TestCase) -> None:
+    if artifact_specs(case, "final"):
+        return
+    raise ValueError(
+        f"Кейс {case.id} не объявляет финальный результат. Укажите artifact_type, "
+        "файл в artifacts или final_message с kind: message."
+    )

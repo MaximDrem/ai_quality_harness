@@ -244,6 +244,18 @@ class ArtifactTests(unittest.TestCase):
             context = validation_context(case, str(result))
             self.assertEqual(context.paths(["report"]), [str(result)])
 
+    def test_standard_extension_is_ignored_when_not_declared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            undeclared = work / "result.md"
+            undeclared.write_text("markdown", encoding="utf-8")
+            case = TestCase(id="pptx-only", user_phrase="test", skill="demo", artifact_type=".pptx")
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            result = SimpleNamespace(artifacts=[], events=[])
+            self.assertFalse(collector.has_final(result, []))
+            context = collector.finalize(result, [])
+            self.assertEqual(context.paths(["final"]), [])
+
     def test_uploads_are_never_final_candidates(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -307,6 +319,33 @@ class ArtifactTests(unittest.TestCase):
         self.assertTrue(collector.has_final(result, []))
         context = collector.finalize(result, [])
         self.assertEqual(context.select(["final_message"])[0].text, "Ответ пользователю")
+
+    def test_message_only_case_does_not_extract_existing_file_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            existing = work / "node.js"
+            existing.write_text("console.log(1)", encoding="utf-8")
+            part = SimpleNamespace(
+                type="message.part.updated",
+                properties={"part": {"type": "text", "messageID": "message", "text": f"Ответ готов: {existing}"}},
+            )
+            updated = SimpleNamespace(
+                type="message.updated",
+                properties={"info": {"id": "message", "role": "assistant", "finish": "stop", "time": {"completed": 1}}},
+            )
+            result = SimpleNamespace(artifacts=[], events=[part, updated])
+            case = TestCase(
+                id="message-only",
+                user_phrase="test",
+                skill="demo",
+                artifact_type="",
+                artifacts=[ArtifactSpec(name="final_message", kind="message")],
+            )
+            collector = ArtifactCollector(case, work, work / "snapshots")
+            self.assertTrue(collector.has_final(result, []))
+            context = collector.finalize(result, [])
+            self.assertEqual(context.paths(["final"]), [])
+            self.assertEqual(context.select(["final_message"])[0].text, f"Ответ готов: {existing}")
 
     def test_renderable_checks_every_selected_artifact(self):
         first = CollectedArtifact(path="/tmp/first.pptx", role="final", name="first")

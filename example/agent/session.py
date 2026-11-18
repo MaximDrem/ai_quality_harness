@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..artifacts import ArtifactCollector
-from ..cases import makedirs, resolve_attachment_paths
+from ..cases import makedirs, resolve_attachment_paths, validate_case_output
 from ..config import case_runs_dir
 from ..evaluate import evaluate_case
 from ..logs import HumanLogWriter, RawLogWriter, extract_questions, record_event
@@ -38,6 +38,7 @@ async def run_case(
     auth_mode: Optional[str] = None,
     skills_dir: Optional[str] = None,
 ):
+    validate_case_output(case)
     from client import AgentResult, AgentSession
 
     runs_dir = case_runs_dir(runs_root, run_num, case.id)
@@ -88,7 +89,7 @@ async def run_case(
                         result.tool_calls += event.tool_calls
                         for tool_call in event.tool_calls:
                             output_paths += paths_from_tool_input(tool_call)
-                            output_paths += paths_from_tool_output(tool_call)
+                            output_paths += paths_from_tool_output(tool_call, collector.declared_extensions())
                         for artifact in getattr(event, "artifacts", None) or []:
                             result.artifacts.append(artifact)
                         if event.type == "session.error":
