@@ -1,4 +1,4 @@
-# Проверки компоновки; подключаются через metric_groups: [layout].
+# Проверки компоновки; подключаются через metric_groups: [presentations/layout].
 # weight задаёт вес метрики (по умолчанию 1).
 # Сегменты handler raw_structure/rendered_photos выбирают атрибуты Artifact.
 id: layout

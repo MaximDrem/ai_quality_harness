@@ -1,5 +1,5 @@
 # Текстовые LLM-проверки содержания и языка презентации.
-# Подключаются через metric_groups: [content_language]; weight по умолчанию 1.
+# Подключаются через metric_groups: [presentations/content_language]; weight по умолчанию 1.
 id: content_language
 phase: universal
 checks:

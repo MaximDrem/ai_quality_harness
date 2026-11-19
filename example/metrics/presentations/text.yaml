@@ -1,5 +1,5 @@
 # Форматонезависимые проверки Artifact.text.
-# Подключаются через metric_groups: [text]; weight по умолчанию равен 1.
+# Подключаются через metric_groups: [presentations/text]; weight по умолчанию равен 1.
 id: text
 phase: universal
 checks:

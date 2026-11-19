@@ -106,7 +106,7 @@ class ProcessorTests(unittest.TestCase):
             processors_dir.mkdir()
             (data_dir / "case.yaml").write_text(
                 "id: sample\nuser_phrase: test\nartifact_type: .custom\n"
-                "processor: demo\nmetric_groups: [quality]\nchecks: []\n",
+                "processor: demo\nmetric_groups: [sample_scenario/quality]\nchecks: []\n",
                 encoding="utf-8",
             )
             (metrics_dir / "quality.yaml").write_text(

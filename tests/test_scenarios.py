@@ -66,7 +66,7 @@ class ScenarioTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (data_dir / "one.yaml").write_text(
-                "id: one\nartifact_type: .pptx\nmetric_groups: [layout]\nchecks: []\n",
+                "id: one\nartifact_type: .pptx\nmetric_groups: [demo/layout]\nchecks: []\n",
                 encoding="utf-8",
             )
             (data_dir / "two.yaml").write_text(
@@ -81,6 +81,9 @@ class ScenarioTests(unittest.TestCase):
                 self.assertEqual(selected[0].weight, 2)
                 self.assertEqual([check.text for check in standalone], ["own"])
                 self.assertEqual(standalone[0].weight, 0.5)
+                cases[0].metric_groups = ["layout"]
+                with self.assertRaisesRegex(ValueError, "полным путём"):
+                    build_check_list(cases[0])
 
     def test_validation_respects_case_and_default_groups(self):
         with_case = case_for_validate("deck.pptx", "GD-001", None)
@@ -138,7 +141,7 @@ class ScenarioTests(unittest.TestCase):
                 load_test_cases(cases_dir=str(data_dir))
             (data_dir / "invalid.yaml").unlink()
             (data_dir / "case.yaml").write_text(
-                "id: message\nuser_phrase: test\nmetric_groups: [answer]\nchecks: []\n",
+                "id: message\nuser_phrase: test\nmetric_groups: [demo/answer]\nchecks: []\n",
                 encoding="utf-8",
             )
             (metrics_dir / "answer.yaml").write_text(

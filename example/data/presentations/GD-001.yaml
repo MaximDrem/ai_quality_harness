@@ -16,13 +16,13 @@ user_phrase: |-
 skill: presentation
 artifact_type: .pptx
 metric_groups:
-  - sanity
-  - readability
-  - layout
-  - style
-  - beauty
-  - text
-  - content_language
+  - presentations/sanity
+  - presentations/readability
+  - presentations/layout
+  - presentations/style
+  - presentations/beauty
+  - presentations/text
+  - presentations/content_language
 checks:
 - kind: function
   metric: Следование инструкции

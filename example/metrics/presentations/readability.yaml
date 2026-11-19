@@ -1,4 +1,4 @@
-# Проверки читаемости; подключаются через metric_groups: [readability].
+# Проверки читаемости; подключаются через metric_groups: [presentations/readability].
 # phase задаёт порядок, weight — вес метрики по умолчанию (1).
 # handler выбирает Python-код, text — инструкцию или название проверки.
 id: readability

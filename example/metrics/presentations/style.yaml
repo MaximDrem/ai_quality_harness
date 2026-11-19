@@ -1,4 +1,4 @@
-# Проверки стиля; подключаются через metric_groups: [style].
+# Проверки стиля; подключаются через metric_groups: [presentations/style].
 # weight задаёт вес метрики (по умолчанию 1); handler — путь к проверке.
 id: style
 phase: universal

@@ -1,4 +1,4 @@
-# Проверки визуального качества; подключаются через metric_groups: [beauty].
+# Проверки визуального качества; подключаются через metric_groups: [presentations/beauty].
 # weight задаёт вес метрики (по умолчанию 1); single_slide включает послайдовый judge.
 id: beauty
 phase: universal

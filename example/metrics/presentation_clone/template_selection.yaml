@@ -1,0 +1,13 @@
+id: template_selection
+phase: universal
+checks:
+  - kind: function
+    metric: M1. Выбор шаблона
+    user_phrase: false
+    handler: text/template_style_header
+    artifacts: [style_reference]
+  - kind: function
+    metric: M1. Выбор шаблона
+    user_phrase: false
+    handler: text/template_style_reference
+    artifacts: [style_reference, template]

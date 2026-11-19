@@ -1,0 +1,27 @@
+id: US01-01-01
+user_phrase: |-
+  Вот наш шаблон. Сделай в нём презентацию на 7 слайдов для сотрудников про правила безопасной
+  работы на удалёнке.
+skill: presentation
+metric_groups:
+  - presentations/sanity
+  - presentations/readability
+  - presentations/layout
+  - presentations/style
+  - presentations/beauty
+  - presentations/text
+  - presentations/content_language
+  - presentation_clone/template_selection
+  - presentation_clone/template_fidelity
+  - presentation_clone/template_cleanup_ai
+attachments:
+  - name: template
+    path: assets/AI_Technology_Slidesgo.pptx
+artifacts:
+  - name: style_reference
+    stage: intermediate
+    type: .md
+    path: STYLE.md
+  - name: presentation
+    stage: final
+    type: .pptx

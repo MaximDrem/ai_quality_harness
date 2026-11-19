@@ -1,0 +1,33 @@
+id: template_fidelity
+phase: universal
+checks:
+  - kind: function
+    metric: M3. Сохранение оформления шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/template_slide_size
+    artifacts: [template, presentation]
+  - kind: function
+    metric: M3. Сохранение оформления шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/template_master_theme
+    artifacts: [template, presentation]
+  - kind: function
+    metric: M3. Сохранение оформления шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/template_layouts
+    artifacts: [template, presentation]
+  - kind: function
+    metric: M3. Сохранение оформления шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/template_used_layouts
+    artifacts: [template, presentation]
+  - kind: function
+    metric: M3. Сохранение оформления шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/template_fonts
+    artifacts: [template, presentation]
+  - kind: function
+    metric: M3. Сохранение оформления шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/template_text_colors
+    artifacts: [template, presentation]

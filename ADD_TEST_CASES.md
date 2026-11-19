@@ -20,7 +20,8 @@ user_phrase: |-
 skill: presentation
 artifact_type: .pptx
 metric_groups:
-  - sample_group
+  - presentations/sanity
+  - sample_scenario/sample_group
 ```
 
 `artifact_type` автоматически выбирает процессор по расширению. Поле `processor` нужно только для нестандартного override.
@@ -66,14 +67,16 @@ checks:
     artifacts: [deck]
     options:
       threshold: 10
-    text: Проверка структуры результата
 ```
 
 - `metric_groups` подключает только перечисленные группы.
+- Группа задаётся только полным путём относительно `metrics/`: `<scenario>/<group>`, например `presentations/sanity` или `presentation_clone/template_selection`; короткое имя отклоняется при загрузке.
+- Итоговая метрика может быть набором независимых проверок с одинаковым `metric`: вклад метрики считается как `pass/all`.
 - `weight` группы наследуется проверками; без него вес равен `1`.
 - `phase: common` ставит группу перед индивидуальными проверками, `universal` — после.
 - Типов два: `function` для Python и `llm` для judge.
 - Для `llm` обязателен `input: text | raw_structure | rendered_photos | tool_call`.
+- Для `function` `text` не нужен: handler и `options` полностью описывают проверку; `text` можно опустить.
 
 Отдельная проверка кейса тоже может иметь вес:
 
@@ -83,7 +86,6 @@ checks:
     metric: Отдельная метрика
     weight: 0.5
     handler: text/sample_check
-    text: Отдельная проверка
 ```
 
 Конфликтующие веса одной метрики запрещены.

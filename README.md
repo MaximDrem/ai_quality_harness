@@ -60,12 +60,12 @@ id: GD-001
 user_phrase: Создай презентацию по заданию.
 skill: presentation
 artifact_type: .pptx
-metric_groups: [sanity, readability]
+metric_groups: [presentations/sanity, presentations/readability]
 ```
 
 Тип файла автоматически выбирает процессор. Поле `processor` нужно только для нестандартного override.
 
-Группа метрик:
+Группа метрик задаётся только полным путём относительно `metrics/` как `<scenario>/<group>`; короткое имя отклоняется при загрузке:
 
 ```yaml
 id: readability
@@ -76,14 +76,23 @@ checks:
     metric: Читаемость
     handler: pptx/rendered_photos/text_background_contrast
     artifacts: [final]
-    text: Проверка контраста
 ```
 
 Вес можно задать также отдельной проверке в кейсе. Отсутствующий вес равен `1`; перед расчётом веса нормализуются до суммы `1`. Конфликтующие веса одной метрики отклоняются.
 
+## Сценарий presentation_clone
+
+Сценарий проверяет создание презентации по шаблону пользователя. Текущие кейсы — `US01-01-01…03` на шаблоне AI Technology; остальные кейсы добавляются после появления недостающих шаблонов.
+
+Кейс объявляет вложение `template`, промежуточный `style_reference` (`STYLE.md` на любом уровне `work_dir`) и финальный `presentation`. Метрики задаются наборами независимых функциональных проверок:
+
+- M1 — `text/template_style_header` проверяет формат заголовка `STYLE.md`, `text/template_style_reference` сверяет имя шаблона с вложением;
+- M3 — `pptx/raw_structure/template_slide_size`, `template_master_theme`, `template_layouts`, `template_used_layouts`, `template_fonts` и `template_text_colors` отдельно проверяют размер, master/theme, наборы и использование layouts, шрифты и цвета текста;
+- M5 — `pptx/raw_structure/forbidden_slide_text`, `forbidden_metadata` и `forbidden_links` отдельно сканируют слайды/заметки, метаданные и видимые ссылки на запрещённые фразы/паттерны из YAML.
+
 ## Профиль judge
 
-Промпты и structured output выбираются по `--scenario`. Текущий профиль находится в `checks/llm/presentation/`; `presentations` является его alias. Новый сценарий добавляет `checks/llm/<scenario>/__init__.py` с `SYSTEM_PROMPT`, `build_text_prompt`, `build_vision_prompt` и `JudgeResult`. Изменять runner не требуется.
+Промпты и structured output выбираются по `--scenario`. Текущий профиль находится в `checks/llm/presentation/`; `presentations` и `presentation_clone` переиспользуют его. Новый сценарий добавляет `checks/llm/<scenario>/__init__.py` с `SYSTEM_PROMPT`, `build_text_prompt`, `build_vision_prompt` и `JudgeResult`. Изменять runner не требуется.
 
 ## Единый Artifact
 
@@ -109,7 +118,7 @@ Artifact
 
 Дополнительные атрибуты объявляются `REQUIRES` в модуле. Результат проверки добавляется в `artifact.results` и затем попадает в XLSX.
 
-Типов два: `function` для Python и `llm` для judge. Для judge обязателен `input: text | raw_structure | rendered_photos | tool_call`. Процессор сериализует `raw_structure` в JSON-представление для judge.
+Типов два: `function` для Python и `llm` для judge. Для `function` достаточно `handler` и `options`; для judge обязателен `input: text | raw_structure | rendered_photos | tool_call`. Процессор сериализует `raw_structure` в JSON-представление для judge.
 
 Существующие процессоры переиспользуются по расширению. Для нового формата добавляется `checks/processors/processor_<name>.py` без изменений evaluator.
 

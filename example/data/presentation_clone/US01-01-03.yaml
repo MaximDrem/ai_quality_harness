@@ -1,0 +1,30 @@
+id: US01-01-03
+user_phrase: |-
+  Сделай по нашему шаблону отчёт для руководства на 6 слайдов о пилоте чат-бота в колл-центре.
+  Данные: 120 000 обращений в месяц, бот закрывает 38% обращений без оператора (план был 30%),
+  среднее время ответа сократилось с 4,5 до 1,2 минуты, оценка клиентов 4,6 из 5. После
+  титульного: цели пилота, результаты, сравнение с планом, риски, решение о масштабировании.
+  Других цифр не добавляй.
+skill: presentation
+metric_groups:
+  - presentations/sanity
+  - presentations/readability
+  - presentations/layout
+  - presentations/style
+  - presentations/beauty
+  - presentations/text
+  - presentations/content_language
+  - presentation_clone/template_selection
+  - presentation_clone/template_fidelity
+  - presentation_clone/template_cleanup_ai
+attachments:
+  - name: template
+    path: assets/AI_Technology_Slidesgo.pptx
+artifacts:
+  - name: style_reference
+    stage: intermediate
+    type: .md
+    path: STYLE.md
+  - name: presentation
+    stage: final
+    type: .pptx

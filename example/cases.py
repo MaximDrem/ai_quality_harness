@@ -210,18 +210,22 @@ def load_test_cases(
 
 
 def _metric_file(root: Path, name: str) -> Path:
-    relative = Path(f"{name}.yaml")
+    value = str(name or "").strip().replace("\\", "/")
+    relative = Path(f"{value}.yaml")
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(f"Некорректное имя группы метрик: {name!r}")
     return root / relative
 
 
 def _load_metric_group(case: TestCase, name: str) -> Tuple[str, str, List[Check]]:
-    scenario_root = METRICS_DIR / case.scenario
-    path = _metric_file(scenario_root, name)
-    if not path.is_file() and case.artifact_type:
-        common_root = METRICS_DIR / "common" / case.artifact_type.lstrip(".")
-        path = _metric_file(common_root, name)
+    value = str(name or "").strip().replace("\\", "/")
+    parts = value.split("/")
+    if len(parts) < 2 or not all(parts):
+        raise ValueError(
+            f"Кейс {case.id}: группа метрик {name!r} должна задаваться полным путём "
+            f"относительно metrics/: <scenario>/<group>"
+        )
+    path = _metric_file(METRICS_DIR / parts[0], "/".join(parts[1:]))
     if not path.is_file():
         raise FileNotFoundError(
             f"Группа метрик {name!r} кейса {case.id} не найдена: {path}"

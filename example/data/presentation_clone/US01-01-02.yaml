@@ -1,0 +1,29 @@
+id: US01-01-02
+user_phrase: |-
+  Держи шаблон. Нужна короткая презентация на 5 слайдов для операционистов в отделениях: мы
+  запускаем ИИ-помощника, который подсказывает ответы на вопросы клиентов. Структура: что это,
+  чем поможет в работе, как начать пользоваться. Пиши простым языком, без технических терминов,
+  и в конце предложи попробовать уже на этой неделе.
+skill: presentation
+metric_groups:
+  - presentations/sanity
+  - presentations/readability
+  - presentations/layout
+  - presentations/style
+  - presentations/beauty
+  - presentations/text
+  - presentations/content_language
+  - presentation_clone/template_selection
+  - presentation_clone/template_fidelity
+  - presentation_clone/template_cleanup_ai
+attachments:
+  - name: template
+    path: assets/AI_Technology_Slidesgo.pptx
+artifacts:
+  - name: style_reference
+    stage: intermediate
+    type: .md
+    path: STYLE.md
+  - name: presentation
+    stage: final
+    type: .pptx
