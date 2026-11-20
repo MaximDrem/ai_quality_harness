@@ -19,9 +19,8 @@ attachments:
     path: assets/AI_Technology_Slidesgo.pptx
 artifacts:
   - name: style_reference
-    stage: intermediate
     type: .md
     path: STYLE.md
   - name: presentation
-    stage: final
+    is_final_result: true
     type: .pptx

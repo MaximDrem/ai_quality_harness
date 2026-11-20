@@ -1,4 +1,4 @@
-"""Общая обработка Office-текста и рендера в rendered_photos."""
+"""Общий Office-рендер файлов в rendered_photos."""
 
 from __future__ import annotations
 
@@ -11,11 +11,6 @@ from .base import BaseProcessor
 
 class OfficeProcessor(BaseProcessor):
     extensions = set()
-
-    def build_text(self, artifact) -> str:
-        from example.judge.extract import _parse_office_artifact_text
-
-        return _parse_office_artifact_text(artifact.path)
 
     def build_raw_structure(self, artifact):
         return None

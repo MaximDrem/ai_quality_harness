@@ -1,13 +1,12 @@
 """Модели кейсов, артефактов, проверок и результатов прогона.
 
-Artifact объединяет файлы и финальное сообщение, хранит лениво вычисляемые
-text/raw_structure/rendered_photos, связанные tool_calls и результаты проверок. ArtifactContext
-выполняет выбор по ролям и материализацию атрибутов через процессоры.
+Artifact объединяет файлы и финальное сообщение, хранит извлечённые
+text/raw_structure/rendered_photos, связанные tool_calls и результаты проверок.
+ArtifactContext выполняет выбор по ролям после полной обработки processors.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -23,7 +22,7 @@ class ArtifactSpec:
     name: str
     artifact_type: str = ""
     path: str = ""
-    stage: str = "final"
+    is_final_result: bool = False
     required: bool = True
     processor: str = ""
     kind: str = "file"
@@ -41,10 +40,11 @@ class Artifact:
     kind: str = "file"
     text: str = ""
     raw_structure: Any = None
+    serialized_raw_structure: str = ""
     rendered_photos: List[str] = field(default_factory=list)
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     results: List["CheckResult"] = field(default_factory=list)
-    loaded_attributes: set = field(default_factory=set, repr=False)
+    processing_errors: Dict[str, str] = field(default_factory=dict)
     render_dir: Optional[str] = field(default=None, repr=False)
 
 
@@ -54,6 +54,7 @@ CollectedArtifact = Artifact
 @dataclass
 class ArtifactContext:
     items: List[Artifact] = field(default_factory=list)
+    processed: bool = False
 
     @property
     def photos(self) -> Dict[str, List[str]]:
@@ -84,44 +85,6 @@ class ArtifactContext:
         selected = [item for item in self.items if item.path in paths]
         return [photo for item in selected for photo in item.rendered_photos]
 
-    def processor_for(self, artifact: str | Artifact, processor: str = ""):
-        from .checks.processors import get_processor
-
-        item = artifact if isinstance(artifact, Artifact) else next(
-            (entry for entry in self.items if entry.path == str(artifact)),
-            None,
-        )
-        path = item.path if item and item.path else str(artifact)
-        name = processor or (item.processor if item else "")
-        return get_processor(name=name, path=path, artifact_type=item.artifact_type if item else "")
-
-    def materialize(
-        self,
-        artifacts: Sequence[Artifact],
-        attribute: str,
-        processor: str = "",
-    ) -> None:
-        for artifact in artifacts:
-            if attribute in ("path", "tool_calls", "final_message") or attribute in artifact.loaded_attributes:
-                continue
-            if artifact.kind == "message":
-                artifact.loaded_attributes.add(attribute)
-                continue
-            self.processor_for(artifact, processor).process(artifact, {attribute})
-
-    def extract_text(self, artifact: str | Artifact, processor: str = "") -> str:
-        item = artifact if isinstance(artifact, Artifact) else next(
-            entry for entry in self.items if entry.path == str(artifact)
-        )
-        self.materialize([item], "text", processor)
-        return item.text
-
-    def serialize_raw_structure(self, artifact: Artifact, processor: str = "") -> str:
-        self.materialize([artifact], "raw_structure", processor)
-        if artifact.kind == "message":
-            return json.dumps(artifact.raw_structure, ensure_ascii=False, default=str)
-        return self.processor_for(artifact, processor).serialize_raw_structure(artifact.raw_structure)
-
 
 @dataclass
 class TestCase:
@@ -149,7 +112,6 @@ class Check:
     handler: str = ""
     artifacts: List[str] = field(default_factory=list)
     options: Dict[str, Any] = field(default_factory=dict)
-    processor: str = ""
     weight: Optional[float] = None
     input: str = ""
 
@@ -191,7 +153,7 @@ class RunResult:
     agent_time_sec: float = 0.0
     tokens: Dict[str, int] = field(default_factory=dict)
     continuations: int = 0
-    intermediate_artifacts: List[str] = field(default_factory=list)
+    supporting_artifacts: List[str] = field(default_factory=list)
     source_artifacts: List[str] = field(default_factory=list)
     final_message: str = ""
     actual_skill: str = ""

@@ -29,7 +29,12 @@
 //   WSC_HOSTNAME               hostname (по умолчанию 127.0.0.1)
 //   OPENCODE_SERVER_USERNAME   Basic-auth пользователь (по умолчанию opencode)
 //   OPENCODE_SERVER_PASSWORD   Basic-auth пароль
-//   WSC_INJECTIONS             JSON-объект инъекций: {userInfo?, userLocale?}
+//   WSC_INJECTIONS             JSON-объект инъекций: {userInfo?, userLocale?, systemMcp?}
+//   WSC_SESSION_COOKIES        header-строка кук для customFetch (Sudir-сессия)
+//   WSC_SESSION_COOKIES_FILE   файл с той же строкой: Python перезаписывает его
+//                              после re-login, customFetch читает на каждом запросе
+//   WSC_SHARED_API_ORIGIN      Origin/Referer для запросов вне локального прокси
+//   WSC_USER_AGENT             User-Agent для тех же запросов (по умолчанию Chrome)
 //   WSC_SIDECAR_DEBUG          "1" — писать DEBUG-логи sidecar'а в stderr
 //
 // Выход (stdout): строка `gigatool server listening on http://host:port` —
@@ -37,15 +42,7 @@
 // Python-парсер порта менять не нужно.
 
 import { pathToFileURL } from "node:url"
-
-function stringify(value) {
-  if (typeof value === "string") return value
-  try {
-    return JSON.stringify(value) ?? String(value)
-  } catch {
-    return String(value)
-  }
-}
+import { loadUndici, makeUserFetch, stringify } from "./user_fetch.mjs"
 
 function readInjections() {
   const raw = (process.env.WSC_INJECTIONS ?? "").trim()
@@ -60,6 +57,16 @@ function readInjections() {
 }
 
 async function main() {
+  // Паритет с desktop: Electron доверяет корпоративному корню из хранилища ОС.
+  // Голый Node проверяет только встроенный bundle Mozilla, поэтому Python-
+  // родитель ставит `--use-openssl-ca`. Если флага нет (например, инстанс
+  // поднят старым кодом), MCP с корпоративным сертификатом отвалится с
+  // `unable to verify the first certificate` — предупреждаем в server.log,
+  // чтобы причина была видна сразу, а не только по пропавшим тулам.
+  if (!process.execArgv.includes("--use-openssl-ca")) {
+    console.error("[launcher] внимание: спавн без --use-openssl-ca, корпоративные CA из ОС не подхватятся")
+  }
+
   const modulePath = (process.env.WSC_NODE_MODULE ?? "").trim()
   if (!modulePath) {
     console.error("[launcher] WSC_NODE_MODULE не задан (путь к dist/node/node.js)")
@@ -92,13 +99,20 @@ async function main() {
 
   // setInjections мерджит: отсутствующее поле не затирает текущее значение,
   // поэтому пустой userInfo просто не передаём (как server.ts:217-227).
+  // systemMcp — платформенные MCP-серверы (ресурсы desktop): пока corpsearch
+  // подключён, промт получает `<mcp-routing-guidance>`, а встроенный
+  // corp_search уходит в отложенный каталог — ровно как в desktop.
   const injections = readInjections()
   const userInfo = injections.userInfo
   const userLocale = injections.userLocale
+  const systemMcp = injections.systemMcp
+  const customFetch = makeUserFetch(loadUndici(modulePath))
   mod.setInjections({
     ...(typeof userInfo === "string" && userInfo ? { userInfo } : {}),
     userLocale:
       (typeof userLocale === "string" && userLocale) || (process.env.WSC_USER_LOCALE ?? "").trim() || "ru",
+    ...(systemMcp && typeof systemMcp === "object" && !Array.isArray(systemMcp) ? { systemMcp } : {}),
+    ...(customFetch ? { customFetch } : {}),
   })
 
   // username/password — как в desktop (server.ts:265-270). Сам sidecar читает

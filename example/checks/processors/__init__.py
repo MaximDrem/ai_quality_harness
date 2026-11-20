@@ -1,13 +1,15 @@
-"""Фабрика процессоров processor_<type>.py.
+"""Динамическая фабрика и eager-обработка ArtifactContext.
 
-Выбирает явный processor из YAML или находит его по расширению. Процессоры
-загружаются динамически и не регистрируются в основном pipeline.
+До checks каждый файловый Artifact направляется в явно заданный processor или
+в processor, объявивший поддержку его расширения. Конкретный processor сразу
+заполняет все свои атрибуты в том же Artifact.
 """
 
 from __future__ import annotations
 
 import functools
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Dict
@@ -62,6 +64,28 @@ def get_processor(name: str = "", path: str = "", artifact_type: str = ""):
         if suffix in {item.lower() for item in processor.extensions}:
             return processor
     raise ValueError(f"Нет процессора для типа {suffix!r} файла {path!r}")
+
+
+def process_context(context) -> None:
+    for artifact in context.items:
+        artifact.processing_errors = {}
+        if artifact.kind == "message":
+            artifact.serialized_raw_structure = json.dumps(
+                artifact.raw_structure,
+                ensure_ascii=False,
+                default=str,
+            )
+            continue
+        try:
+            processor = get_processor(
+                name=artifact.processor,
+                path=artifact.path or "",
+                artifact_type=artifact.artifact_type,
+            )
+            processor.process(artifact)
+        except Exception as error:  # noqa: BLE001
+            artifact.processing_errors["processor"] = str(error)
+    context.processed = True
 
 
 def clear_processor_cache() -> None:

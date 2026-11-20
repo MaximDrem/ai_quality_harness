@@ -117,7 +117,6 @@ def check_from_entry(entry: Any, source: str) -> Check:
         handler=str(entry.get("handler") or "").strip(),
         artifacts=_as_str_list(entry.get("artifacts")),
         options=dict(options),
-        processor=str(entry.get("processor") or "").strip(),
         weight=_as_weight(entry.get("weight"), source),
         input=input_name,
     )
@@ -139,10 +138,9 @@ def _attachment_from_entry(entry: Any, source: str) -> AttachmentSpec:
 def _artifact_from_entry(entry: Any, source: str, index: int) -> ArtifactSpec:
     if not isinstance(entry, dict):
         raise ValueError(f"{source}: артефакт должен быть YAML-структурой")
-    stage = str(entry.get("stage") or "final").strip().lower()
-    if stage not in ("final", "intermediate"):
-        raise ValueError(f"{source}: stage артефакта должен быть final или intermediate")
-    name = str(entry.get("name") or f"{stage}_{index}").strip()
+    if "stage" in entry:
+        raise ValueError(f"{source}: stage удалён; используйте is_final_result: true только у финала")
+    name = str(entry.get("name") or f"artifact_{index}").strip()
     kind = str(entry.get("kind") or "file").strip().lower()
     if kind not in ("file", "message"):
         raise ValueError(f"{source}: kind артефакта должен быть file или message")
@@ -154,7 +152,7 @@ def _artifact_from_entry(entry: Any, source: str, index: int) -> ArtifactSpec:
         name=name,
         artifact_type=normalize_artifact_type(raw_type) if kind == "file" else raw_type,
         path=artifact_path,
-        stage=stage,
+        is_final_result=(True if kind == "message" else _as_bool(entry.get("is_final_result"), False)),
         required=_as_bool(entry.get("required"), True),
         processor=str(entry.get("processor") or "").strip(),
         kind=kind,
@@ -189,7 +187,7 @@ def load_test_cases(
         ]
         artifact_type = normalize_artifact_type(str(raw.get("artifact_type") or ""))
         if not artifact_type:
-            final = next((item for item in artifacts if item.stage == "final"), None)
+            final = next((item for item in artifacts if item.is_final_result), None)
             artifact_type = final.artifact_type if final else ""
         cases.append(
             TestCase(
@@ -217,7 +215,7 @@ def _metric_file(root: Path, name: str) -> Path:
     return root / relative
 
 
-def _load_metric_group(case: TestCase, name: str) -> Tuple[str, str, List[Check]]:
+def _load_metric_group(case: TestCase, name: str) -> Tuple[str, List[Check]]:
     value = str(name or "").strip().replace("\\", "/")
     parts = value.split("/")
     if len(parts) < 2 or not all(parts):
@@ -236,7 +234,6 @@ def _load_metric_group(case: TestCase, name: str) -> Tuple[str, str, List[Check]
     phase = str(raw.get("phase") or "universal").strip().lower()
     if phase not in ("common", "universal"):
         raise ValueError(f"{path}: phase должен быть common или universal")
-    processor = str(raw.get("processor") or "").strip()
     weight = _as_weight(raw.get("weight"), str(path))
     checks = [
         check_from_entry(item, f"{path}#checks")
@@ -245,12 +242,11 @@ def _load_metric_group(case: TestCase, name: str) -> Tuple[str, str, List[Check]
     checks = [
         replace(
             check,
-            processor=check.processor or processor,
             weight=check.weight if check.weight is not None else weight,
         )
         for check in checks
     ]
-    return phase, processor, checks
+    return phase, checks
 
 
 def _check_identity(check: Check) -> str:
@@ -264,7 +260,6 @@ def _check_identity(check: Check) -> str:
             "handler": check.handler,
             "artifacts": check.artifacts,
             "options": check.options,
-            "processor": check.processor,
             "weight": check.weight,
             "input": check.input,
         },
@@ -281,7 +276,7 @@ def build_check_list(
     common: List[Check] = []
     universal: List[Check] = []
     for name in case.metric_groups:
-        phase, _processor, checks = _load_metric_group(case, name)
+        phase, checks = _load_metric_group(case, name)
         target = common if phase == "common" else universal
         target.extend(checks)
     metric_weights: Dict[str, float] = {}
@@ -293,7 +288,6 @@ def build_check_list(
     individual = [
         replace(
             check,
-            processor=check.processor or case.processor,
             weight=(
                 metric_weights.get(check.metric)
                 if check.weight is None
@@ -342,24 +336,35 @@ def resolve_attachment_paths(case: TestCase) -> List[str]:
     return paths
 
 
-def artifact_specs(case: TestCase, stage: Optional[str] = None) -> List[ArtifactSpec]:
+def artifact_specs(case: TestCase, final_only: Optional[bool] = None) -> List[ArtifactSpec]:
     specs = [
-        replace(spec, processor=spec.processor or case.processor)
+        replace(
+            spec,
+            processor=spec.processor or case.processor,
+            is_final_result=spec.is_final_result or spec.kind == "message",
+        )
         for spec in case.artifacts
     ]
-    if not specs and case.artifact_type and stage in (None, "final"):
-        specs = [ArtifactSpec(name="final", artifact_type=case.artifact_type, processor=case.processor)]
+    if not specs and case.artifact_type and final_only in (None, True):
+        specs = [
+            ArtifactSpec(
+                name="final",
+                artifact_type=case.artifact_type,
+                is_final_result=True,
+                processor=case.processor,
+            )
+        ]
     if not specs and any("final_message" in check.artifacts for check in case.check_list):
-        specs = [ArtifactSpec(name="final_message", stage="final", kind="message")]
-    if stage is not None:
-        return [spec for spec in specs if spec.stage == stage]
+        specs = [ArtifactSpec(name="final_message", is_final_result=True, kind="message")]
+    if final_only is not None:
+        return [spec for spec in specs if spec.is_final_result is final_only]
     return specs
 
 
 def validate_case_output(case: TestCase) -> None:
-    if artifact_specs(case, "final"):
+    if artifact_specs(case, True):
         return
     raise ValueError(
         f"Кейс {case.id} не объявляет финальный результат. Укажите artifact_type, "
-        "файл в artifacts или final_message с kind: message."
+        "is_final_result: true у файла в artifacts или final_message с kind: message."
     )

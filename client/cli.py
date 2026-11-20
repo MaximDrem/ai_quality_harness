@@ -42,8 +42,9 @@ def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         "--auth-mode",
         choices=("ift", "prod", "cert"),
         default=None,
-        help="способ авторизации: ift (cookie-прокси к ИФТ, по умолчанию), "
-        "prod (cookie-прокси к пром-стенду) или cert (mTLS-прокси на сертах); "
+        help="транспорт к МОДЕЛЯМ: ift (cookie-прокси к ИФТ, по умолчанию), "
+        "prod (cookie-прокси к пром-шлюзу) или cert (mTLS-прокси на сертах); "
+        "профиль/MCP/поиск всегда остаются на ИФТ (dev-ветка desktop); "
         "env GIGATOOL_AUTH_MODE",
     )
 

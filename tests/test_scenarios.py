@@ -111,7 +111,7 @@ class ScenarioTests(unittest.TestCase):
                     options={"value": "loaded"},
                 )
                 artifact = Artifact(path=None, role="final", kind="message", text="text")
-                result = run_functional_check(check, ArtifactContext(items=[artifact]))
+                result = run_functional_check(check, ArtifactContext(items=[artifact], processed=True))
                 self.assertTrue(result.success)
                 self.assertEqual(result.reason, "loaded")
                 self.assertEqual(len(artifact.results), 1)
@@ -134,7 +134,7 @@ class ScenarioTests(unittest.TestCase):
             data_dir.mkdir(parents=True)
             metrics_dir.mkdir(parents=True)
             (data_dir / "invalid.yaml").write_text(
-                "id: invalid\nartifact_type: ''\nartifacts:\n- name: any\n  stage: final\n",
+                "id: invalid\nartifact_type: ''\nartifacts:\n- name: any\n  is_final_result: true\n",
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "type или path"):

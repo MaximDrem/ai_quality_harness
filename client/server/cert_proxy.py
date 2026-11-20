@@ -3,7 +3,8 @@
 Desktop в этом режиме поднимает `packages/desktop-electron/scripts/proxy.ts`:
 локальный HTTP-прокси, который снимает клиентские `Authorization`/`Cookie`,
 прикладывает клиентский сертификат GigaChat и форвардит запросы в апстрим.
-Sidecar ходит на `http://127.0.0.1:PORT/v1`.
+Sidecar ходит на `http://127.0.0.1:PORT` (opencode сам добавляет `/models`
+и `/chat/completions`; `/v1` уже есть в апстриме прокси).
 
 Здесь повторяется именно лаунчерная часть `run.sh sert`:
 
@@ -20,21 +21,32 @@ Sidecar ходит на `http://127.0.0.1:PORT/v1`.
 Сам `scripts/proxy.ts` — не наш код и не дублируется: он запускается как есть
 через bun (как в desktop), со всеми зависимостями пакета desktop-electron.
 Sudir-куки этому прокси не нужны: авторизация к моделям идёт по сертификату.
+
+Дамп тел запросов и трейс в raw.log в этом режиме пишет `TeeProxy` — тонкий
+Python-хоп между sidecar'ом и bun-прокси (см. `proxy/tee.py`): тело уходит
+дальше байт-в-байт, но сохраняется в `<run>/requests/<sha1>.json`.
+
+Там же выравниваются лимиты: `scripts/proxy.ts` отдаёт каталог с фиктивными
+`limit` (`context: 131072, output: 8192`), поэтому tee подменяет их значениями
+настоящего каталога IFT — `max_tokens` и окно контекста как в `auth_mode=ift`.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Dict, Optional, Union
 
 from ..core.config import ClientConfig
 from ..core.errors import InstanceError
+from .proxy import GIGACHAT_USER_AGENT, TeeProxy, normalize_cookies
 
 # Строка, которую печатает scripts/proxy.ts сразу после bind (её же читает
 # run.sh через grep).
@@ -53,7 +65,27 @@ class CertProxy:
         self.port: Optional[int] = None
         self.process: Optional[subprocess.Popen] = None
         self.log_path: Optional[Path] = None
+        self.tee: Optional[TeeProxy] = None
+        self._logger: Optional[Callable[[Dict], None]] = None
+        self._dump_dir: Optional[str] = None
         self._warned = False
+
+    # ------------------------------------------------------------- listeners
+    def attach_logger(
+        self,
+        sink: Callable[[Dict], None],
+        dump_dir: Optional[Union[str, "os.PathLike[str]"]] = None,
+    ) -> None:
+        """Привязать sink трейса и каталог дампа (интерфейс cookie-прокси).
+
+        `sink` — callable(rec: dict) в raw.log кейса; `dump_dir` — каталог
+        полных тел запросов (`<run>/requests`). Если прокси ещё не стартовал,
+        привязка применяется при `start()`.
+        """
+        self._logger = sink
+        self._dump_dir = str(dump_dir) if dump_dir is not None else None
+        if self.tee is not None:
+            self.tee.attach_logger(sink, dump_dir=self._dump_dir)
 
     # --------------------------------------------------------------- helpers
     @property
@@ -97,6 +129,50 @@ class CertProxy:
         else:
             env.pop("GIGACHAT_PROXY_PORT", None)
         return env
+
+    def _ift_model_limits(self) -> Optional[Dict[str, dict]]:
+        """`{model_id: limit}` из настоящего каталога IFT.
+
+        `scripts/proxy.ts` отдаёт фиктивный каталог: `limit` у всех моделей
+        `{context: 131072, output: 8192}`. Из-за этого в `cert` другой
+        `max_tokens` (и окно контекста), чем в `ift`, где sidecar получает
+        каталог шлюза как есть. Здесь каталог запрашивается тем же способом,
+        что и в cookie-прокси: `GET {origin}/models` с Sudir-куками.
+        """
+        url = self.cfg.gigachat_upstream.rstrip("/") + "/models"
+        headers = {"Accept": "application/json", "User-Agent": GIGACHAT_USER_AGENT}
+        cookie = normalize_cookies("", self.cfg.session_cookies)
+        if cookie:
+            headers["Cookie"] = cookie
+        ctx = ssl.create_default_context()
+        if bool(getattr(self.cfg, "insecure_tls", True)):
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30.0, context=ctx) as resp:
+                body = json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception as err:  # noqa: BLE001
+            print(
+                f"[cert-proxy] каталог IFT недоступен ({url}): {err}; "
+                "лимиты останутся из proxy.ts",
+                file=sys.stderr,
+            )
+            return None
+        data = body.get("data") if isinstance(body, dict) else body
+        if not isinstance(data, list):
+            print(f"[cert-proxy] каталог IFT: неожиданный ответ ({url})", file=sys.stderr)
+            return None
+        limits = {
+            item["id"]: item["limit"]
+            for item in data
+            if isinstance(item, dict) and item.get("id") and isinstance(item.get("limit"), dict)
+        }
+        if not limits:
+            print(f"[cert-proxy] каталог IFT: в ответе нет limit-ов ({url})", file=sys.stderr)
+            return None
+        print(f"[cert-proxy] лимиты/контекст моделей: каталог IFT ({len(limits)} моделей)", file=sys.stderr)
+        return limits
 
     def _read_bound_port(self, deadline: float) -> int:
         """Дождаться строки bind в логе прокси и вернуть фактический порт."""
@@ -161,10 +237,29 @@ class CertProxy:
                 f"[cert-proxy] порт {requested} был занят, прокси встал на {self.port}",
                 file=sys.stderr,
             )
-        # Sidecar строит адреса как {base}/models и {base}/chat/completions,
-        # поэтому base включает /v1 (как GIGACHAT_BASE_URL в run.sh).
-        self.base_url = f"http://127.0.0.1:{self.port}/v1"
+        # Прокси монтирует каталог на `/models` и форвардит остальное в
+        # апстрим как есть (`{origin}{originalUrl}`), а origin уже содержит
+        # `/v1`. Поэтому base — корень прокси без `/v1`: opencode сам
+        # добавляет `/models` и `/chat/completions`, как в desktop
+        # (`GIGACHAT_BASE_URL="http://localhost:${GIGACHAT_PROXY_PORT}"`).
+        # Было: base с `/v1` — давало `{origin}/v1/models` и `/v1/v1/chat/completions`
+        # (404 на каталоге и на чате).
+        # self.base_url = f"http://127.0.0.1:{self.port}/v1"
+        self.base_url = f"http://127.0.0.1:{self.port}"
         self._wait_models(self.base_url)
+
+        # Sidecar ходит не в bun напрямую, а через tee: он сохраняет тела
+        # запросов (`<run>/requests/<sha1>.json`) и пишет трейс в raw.log,
+        # форвардя сам запрос байт-в-байт (см. proxy/tee.py). Он же подменяет
+        # фиктивные limit-ы каталога proxy.ts значениями из IFT.
+        self.tee = TeeProxy(
+            self.base_url,
+            upstream_timeout=float(getattr(self.cfg, "gigachat_upstream_timeout", 300.0)),
+            limits_provider=self._ift_model_limits,
+        ).start()
+        if self._logger is not None:
+            self.tee.attach_logger(self._logger, dump_dir=self._dump_dir)
+        self.base_url = self.tee.base_url or self.base_url
         return self
 
     def set_cookie_header(self, header: str) -> None:  # noqa: ARG002
@@ -175,6 +270,9 @@ class CertProxy:
         """
 
     def stop(self, timeout: float = 10.0) -> None:
+        if self.tee is not None:
+            self.tee.stop()
+            self.tee = None
         if self.process and self.process.poll() is None:
             self.process.terminate()
             try:

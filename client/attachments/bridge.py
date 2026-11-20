@@ -11,7 +11,8 @@ UI desktop (packages/app) при отправке сообщения не пер
 
   * `prepare` — повторяет клиентскую подготовку UI для файла, заданного путём
     (pptx → ссылка на файл, xlsx/xls → CSV-«пилюля», pdf/изображение/прочее →
-    data-URL + извлечённый текст);
+    data-URL + извлечённый текст), включая манифест `[Приложенные файлы: …]`,
+    который UI дописывает в конец сообщения;
   * `resolve` — отдаёт части в настоящий `SessionPrompt` бэкенда через
     bun-мост `bridge.ts` (сервер сам материализует файлы и извлекает текст).
 
@@ -161,14 +162,33 @@ class PreparedAttachment:
     # Части, которые UI поставит в промпт (text/file), ещё до серверной
     # материализации.
     parts: List[Dict[str, Any]] = field(default_factory=list)
+    # Подпись в манифесте `[Приложенные файлы: …]` — та же, что UI передаёт в
+    # `manifest(attachment, label)` (`buildUploadedAttachmentRequestParts`).
+    manifest_label: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "path": str(self.path),
             "mime": self.mime,
             "filename": self.filename,
+            "manifest_label": self.manifest_label,
             "parts": [dict(p) for p in self.parts],
         }
+
+
+def _manifest_label(mime: str) -> str:
+    """Подпись для `manifest(attachment, label)` по MIME (как в UI)."""
+    if mime.startswith("image/"):
+        return "изображение"
+    if mime == "application/pdf":
+        return "PDF, файл приложен"
+    if mime == DOCX_MIME:
+        return "документ Word"
+    if mime == PPTX_MIME:
+        return "презентация"
+    if mime == "text/plain":
+        return "текстовый файл"
+    return "файл"
 
 
 def _data_url(path: Path, mime: str) -> str:
@@ -254,7 +274,10 @@ def prepare_attachment(raw_path: str, base_dir: Optional[Path] = None) -> Prepar
                 "localPath": str(path),
             }
         ]
-        return PreparedAttachment(path=path, mime=mime, filename=filename, parts=parts)
+        label = "презентация" if mime == PPTX_MIME else "документ Word"
+        return PreparedAttachment(
+            path=path, mime=mime, filename=filename, parts=parts, manifest_label=label
+        )
 
     if mime == PPTX_MIME:
         parts = [
@@ -266,7 +289,13 @@ def prepare_attachment(raw_path: str, base_dir: Optional[Path] = None) -> Prepar
                 "localPath": str(path),
             }
         ]
-        return PreparedAttachment(path=path, mime=PPTX_MIME, filename=filename, parts=parts)
+        return PreparedAttachment(
+            path=path,
+            mime=PPTX_MIME,
+            filename=filename,
+            parts=parts,
+            manifest_label="презентация, файл приложен",
+        )
 
     if size > limit:
         raise AgentError(
@@ -283,12 +312,14 @@ def prepare_attachment(raw_path: str, base_dir: Optional[Path] = None) -> Prepar
             raise AgentError(f"spreadsheet has no readable sheets: {filename}")
         if len(csv) <= CSV_INLINE_CHAR_LIMIT:
             inline = f"\n\n[{filename}]\n```csv\n{csv}\n```\n"
+            label = "таблица, данные вставлены в сообщение"
         else:
             inline = (
                 f"\n\n[{filename}]\nCSV content is {len(csv):,} characters, so it was kept as an "
                 "attached file instead of being pasted into the model context. Use the saved "
                 "attachment file from the prompt context to inspect or process the full data.\n"
             )
+            label = "таблица, слишком большая — оставлена файлом"
         parts = [
             {
                 "type": "file",
@@ -298,7 +329,9 @@ def prepare_attachment(raw_path: str, base_dir: Optional[Path] = None) -> Prepar
             },
             {"type": "text", "synthetic": True, "text": inline},
         ]
-        return PreparedAttachment(path=path, mime=CSV_MIME, filename=filename, parts=parts)
+        return PreparedAttachment(
+            path=path, mime=CSV_MIME, filename=filename, parts=parts, manifest_label=label
+        )
 
     # Остальное (картинки, PDF, Office, текст) UI отправляет data-URL'ом; сервер
     # сам решает, что из этого материализовать в uploads, что извлечь текстом,
@@ -312,7 +345,9 @@ def prepare_attachment(raw_path: str, base_dir: Optional[Path] = None) -> Prepar
             "localPath": str(path),
         }
     ]
-    return PreparedAttachment(path=path, mime=mime, filename=filename, parts=parts)
+    return PreparedAttachment(
+        path=path, mime=mime, filename=filename, parts=parts, manifest_label=_manifest_label(mime)
+    )
 
 
 def prepare_attachments(paths: List[str], base_dir: Optional[Path] = None) -> List[PreparedAttachment]:
@@ -320,16 +355,38 @@ def prepare_attachments(paths: List[str], base_dir: Optional[Path] = None) -> Li
 
 
 def build_message_parts(message: str, attachments: List[PreparedAttachment]) -> List[Dict[str, Any]]:
-    """Части сообщения в том порядке, в котором их шлёт UI: текст, вложения."""
+    """Части сообщения в том порядке, в котором их шлёт UI.
+
+    UI собирает `[...instructionParts, ...files, ...syntheticParts]`: сначала
+    все файловые части, затем синтетические блоки (вставленный CSV) и
+    последним — манифест `[Приложенные файлы: …]` с перечнем вложений
+    (`buildUploadedAttachmentRequestParts`).
+    """
     from ..core import ids as _ids
 
     def with_id(part: Dict[str, Any], key: str) -> Dict[str, Any]:
         return {"id": _ids.ascending(key), **part}
 
-    parts: List[Dict[str, Any]] = [with_id({"type": "text", "text": message}, "part")]
+    files: List[Dict[str, Any]] = []
+    synthetic: List[Dict[str, Any]] = []
     for attachment in attachments:
         for part in attachment.parts:
-            parts.append(with_id(part, "part"))
+            (files if part.get("type") == "file" else synthetic).append(part)
+
+    parts: List[Dict[str, Any]] = [with_id({"type": "text", "text": message}, "part")]
+    for part in files + synthetic:
+        parts.append(with_id(part, "part"))
+    if attachments:
+        lines = "\n".join(
+            f"{index}) {attachment.filename} — {attachment.manifest_label}"
+            for index, attachment in enumerate(attachments, start=1)
+        )
+        parts.append(
+            with_id(
+                {"type": "text", "synthetic": True, "text": f"\n\n[Приложенные файлы:\n{lines}\n]\n"},
+                "part",
+            )
+        )
     return parts
 
 

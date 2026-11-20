@@ -46,19 +46,31 @@ _POLL_INTERVAL = 0.2
 _ACTIONS_POLL_INTERVAL = 0.1
 # Сколько ждать установленного SSE-соединения при старте слушателя.
 _LISTENER_READY_TIMEOUT = 15.0
+# Провайдер моделей, если имя передано без `provider/` (sidecar обёрнут
+# GigaChat-прокси, других провайдеров в /config/providers нет).
+_DEFAULT_PROVIDER_ID = "gigachat"
 
 
-def parse_model_ref(model: Any) -> Any:
-    """Нормализовать строку 'provider/model' в объект {providerID, modelID}.
+def parse_model_ref(model: Any, providers: Optional[Dict[str, Any]] = None) -> Any:
+    """Нормализовать ссылку на модель в объект {providerID, modelID}.
 
     Сервер ожидает именно объект (как это делает `gigatool run` /
-    `Provider.parseModel`). Уже объект — пропускаем как есть.
+    `Provider.parseModel`): голая строка без `provider/` отклоняется с
+    HTTP 400 (`Expected object | null, got "..."` на `model`). Поэтому имя
+    без провайдера разворачивается в полную ссылку: провайдер ищется по
+    `providers` (providerID -> {modelID: …}), иначе берётся `gigachat`.
+    Уже объект — пропускаем как есть.
     """
     if isinstance(model, dict):
         return model
-    if isinstance(model, str) and "/" in model:
-        provider, _, mid = model.partition("/")
-        return {"providerID": provider, "modelID": mid}
+    if isinstance(model, str) and model:
+        if "/" in model:
+            provider, _, mid = model.partition("/")
+            return {"providerID": provider, "modelID": mid}
+        for provider_id, models in (providers or {}).items():
+            if model in models:
+                return {"providerID": provider_id, "modelID": model}
+        return {"providerID": _DEFAULT_PROVIDER_ID, "modelID": model}
     return model
 
 
@@ -87,6 +99,7 @@ class AgentClient:
         self._lock = threading.Lock()
         self._handlers: List[EventHandler] = []
         self._stop = threading.Event()
+        self._provider_models: Optional[Dict[str, List[str]]] = None
 
     # ------------------------------------------------------------- события
     def on_event(self, handler: EventHandler) -> None:
@@ -187,6 +200,23 @@ class AgentClient:
     def get_session(self, session_id: str) -> Dict[str, Any]:
         return self.http.get(f"/session/{session_id}")
 
+    def provider_models(self) -> Dict[str, List[str]]:
+        """providerID -> список modelID из `/config/providers` (кэшируется)."""
+        if self._provider_models is None:
+            data = self.http.get("/config/providers") or {}
+            self._provider_models = {
+                provider["id"]: list(provider.get("models") or {})
+                for provider in data.get("providers") or []
+                if provider.get("id")
+            }
+        return self._provider_models
+
+    def _model_ref(self, model: Any) -> Any:
+        """Ссылка на модель для prompt_async; голая строка -> объект."""
+        if isinstance(model, str) and model and "/" not in model:
+            return parse_model_ref(model, self.provider_models())
+        return parse_model_ref(model)
+
     # ----------------------------------------------------------- промпты
     def _build_prompt_payload(
         self,
@@ -206,7 +236,7 @@ class AgentClient:
             "parts": parts,
         }
         if model:
-            payload["model"] = parse_model_ref(model)
+            payload["model"] = self._model_ref(model)
         if variant:
             payload["variant"] = variant
         return payload
@@ -225,7 +255,8 @@ class AgentClient:
         Файлы задаются путями: `prepare_attachments` повторяет клиентскую
         подготовку UI (pptx — ссылкой на файл, xlsx/xls — CSV-«пилюля»,
         остальное — data-URL), а `build_message_parts` раскладывает части в
-        том же порядке (текст, файлы, синтетические блоки).
+        том же порядке (текст, файлы, синтетические блоки, манифест
+        `[Приложенные файлы: …]` в конце).
 
         Материализацию вложения выполнит сам сервер, когда получит промпт:
         копирование в `uploads/`, извлечение Office-текста и header
@@ -397,6 +428,8 @@ class AgentClient:
         Завершается, когда сессия переходит в idle. Retry-статусы
         (session.status type=retry) пробрасываются наверх как обычные события,
         но НЕ завершают итерацию — сервер продолжает генерацию после ретрая.
+        Отказ сервера принять промпт (HTTP 4xx) поднимается сразу: иначе
+        генерация не стартует, а итерация ждёт idle до таймаута простоя.
         При зависании сессии (нет событий сессии дольше event_idle_timeout)
         сессия абортится и поднимается ошибка.
         """
@@ -412,21 +445,27 @@ class AgentClient:
                 message, attachments, sid, payload["messageID"], agent, model
             )
         last_index = 0
-        done = threading.Event()
+        prompt_error: List[SessionError] = []
 
         def pump() -> None:
             try:
                 self._send_prompt_async(sid, payload)
             except SessionError as e:
-                with self._lock:
-                    self._events.append(AgentEvent(type="listener.error", properties={"error": str(e)}))
-            finally:
-                done.set()
+                prompt_error.append(e)
+                # Было: сбой отправки отдавали событием listener.error, а
+                # ожидание продолжалось — прогон висел на heartbeat'ах до
+                # event_idle_timeout, хотя генерация так и не стартовала.
+                # with self._lock:
+                #     self._events.append(AgentEvent(type="listener.error", properties={"error": str(e)}))
 
         threading.Thread(target=pump, daemon=True).start()
 
         last_activity = time.time()
         while True:
+            # Сервер не принял промпт (напр. HTTP 400 из-за неверного model) —
+            # поднимаем ошибку сразу, а не ждём idle до таймаута простоя.
+            if prompt_error:
+                raise prompt_error[0]
             events = self.snapshot_events()
             while last_index < len(events):
                 ev = events[last_index]

@@ -31,9 +31,52 @@ from ..core.config import ClientConfig
 from ..core.errors import InstanceError, ServerNotReadyError
 from .cert_proxy import CertProxy
 from .proxy import GigachatProxy, free_port, normalize_cookies
+from .self_protection import self_protection_value
+from .system_ca import build_bundle
+from .system_mcp import injection_from_config
 from .xvfb import XvfbDisplay
 
 _PORT_RE = re.compile(r"server listening on (http://[\d:.]+)")
+
+# Node (llhttp/undici) по умолчанию рвёт ответ, у которого заголовки длиннее
+# 16 КиБ: `UND_ERR_HEADERS_OVERFLOW`. SberFriend gateway на каждый ответ
+# присылает 5 Set-Cookie PLATFORM_SESSION* по ~4 КБ — блок ~16.5 КБ, и запрос
+# падал ещё до чтения тела (US01-01-01: 5 ретраев → 502). Лимит поднят с
+# запасом: 1 МиБ больше любого реального блока (браузерный предел — 4 КБ на
+# куку). Флаг, а не только `Agent({maxHeaderSize})` в лаунчере: он действует на
+# все undici-клиенты процесса, включая собственные Client/Agent sidecar'а.
+_SIDECAR_MAX_HEADER_SIZE = 1024 * 1024
+
+
+def sidecar_command(node_bin: str, launcher: Path) -> list[str]:
+    """Команда sidecar'а: Node-обёртка с системным CA и поднятым лимитом.
+
+    `--use-openssl-ca` — паритет с desktop: Electron доверяет корпоративному
+    корню из хранилища ОС, а голый Node проверяет только встроенный bundle
+    Mozilla → MCP `corpsearch` падает с `unable to verify the first
+    certificate`, и в промте вместо `<mcp-routing-guidance>` появляется
+    `<mcp-temporary-unavailable>`. Флаг не отключает проверку сертификата —
+    наоборот, добавляет системные корни к встроенным.
+    """
+    return [
+        node_bin,
+        "--use-openssl-ca",
+        f"--max-http-header-size={_SIDECAR_MAX_HEADER_SIZE}",
+        str(launcher),
+    ]
+
+
+# Имена env, которые решают, какой набор CA видит node. Попадают в шапку
+# server.log: по ней видно, с чем реально стартовал процесс (флаги и внешние
+# корни), и не приходится угадывать, был ли применён `--use-openssl-ca`.
+_TLS_ENV_NAMES = ("NODE_EXTRA_CA_CERTS", "NODE_OPTIONS")
+
+
+def sidecar_banner(cmd: list[str], env: dict) -> str:
+    """Первая строка server.log: точная команда спавна и TLS-окружение."""
+    shown = " ".join(cmd)
+    extra = ", ".join(f"{name}={env.get(name) or '-'}" for name in _TLS_ENV_NAMES)
+    return f"[client] спавн: {shown}\n[client] tls env: {extra}\n"
 
 
 class HeadlessInstance:
@@ -54,7 +97,7 @@ class HeadlessInstance:
         self.model = model or self.cfg.model
         self.port = port or free_port()
         # base_dir для хранения данных инстанса. По умолчанию (None) не
-        # переопределяем OPENCODE_BASE_DIR — бэкенд берёт фолбэк ~/.gigacat,
+        # переопределяем OPENCODE_BASE_DIR — бэкенд берёт фолбэк ~/.wsc,
         # как desktop. Свой base_dir задают для изоляции тест-кейсов.
         self.base_dir = base_dir or self.cfg.opencode_base_dir
         # Каталог скиллов: по умолчанию (None) не переопределяем — бэкенд
@@ -65,6 +108,9 @@ class HeadlessInstance:
         self.process: Optional[subprocess.Popen] = None
         self.xvfb: Optional[XvfbDisplay] = None
         self.server_log_path: Optional[Path] = None
+        # Сводный CA-бандл для sidecar'а (см. `system_ca.py`): корни тестовых
+        # стендов есть в NSS/бандле рантайма, но не в /etc/ssl/certs.
+        self.ca_bundle: Optional[Path] = None
         # Профиль пользователя, отданный sidecar'у через setInjections
         # (User: … в системном промпте). None — запрос не удался, старт не
         # блокируется (как desktop: userInfoDescription?: string | null).
@@ -73,7 +119,8 @@ class HeadlessInstance:
         self.username: str = self.cfg.server_username
         self.password: str = self.cfg.server_password
 
-        # Sudir-сессия: авто re-login при 401 (как desktop: notifyExpired ->
+        # Sudir-сессия ИФТ: профиль, MCP, корп-поиск и (в режиме `ift`) шлюз
+        # моделей. Авто re-login при 401 (как desktop: notifyExpired ->
         # повторный логин -> setCookies). Логин/verify всегда на origin
         # SberFriend API (shared_api_origin): куки host-only, чужой stand = 401.
         # В режиме `cert` gigachat_upstream — локальный прокси, поэтому
@@ -83,10 +130,19 @@ class HeadlessInstance:
             self._sudir_base,
             enabled=getattr(self.cfg, "auto_relogin", True),
             on_login=self._apply_relogin,
-            # В проде парольной формы нет: сессию даёт окно Electron (как
-            # desktop, sudir-auth.ts), поэтому re-login идёт через него.
-            login_fn=self._electron_login if self.cfg.auth_mode == "prod" else None,
         )
+        # Прод-сессия ШЛЮЗА МОДЕЛЕЙ — отдельно от IFT-сессии: `prod` ходит
+        # моделями на прод-стенд, а профиль/MCP/поиск остаются на ИФТ.
+        # Парольной формы в проде нет: сессию даёт окно Electron (как desktop,
+        # sudir-auth.ts), поэтому re-login идёт через него.
+        self.gateway_relogin: Optional[SudirRelogin] = None
+        if self.cfg.auth_mode == "prod":
+            self.gateway_relogin = SudirRelogin(
+                self.cfg.gateway_origin,
+                enabled=getattr(self.cfg, "auto_relogin", True),
+                on_login=self._apply_gateway_relogin,
+                login_fn=self._electron_login,
+            )
 
     # ------------------------------------------------------------ x-display
     def _display(self) -> Optional[str]:
@@ -102,7 +158,7 @@ class HeadlessInstance:
     def _build_server_env(self, proxy_base: str) -> dict:
         env = dict(os.environ)
         # Не задаём OPENCODE_BASE_DIR, если каталог не указан явно: тогда
-        # бэкенд сам выбирает фолбэк ~/.gigacat (как `bun run dev:desktop`),
+        # бэкенд сам выбирает фолбэк ~/.wsc (как `bun run dev:desktop`),
         # и headless не запускает скилы из другого места.
         if self.base_dir is not None:
             env["OPENCODE_BASE_DIR"] = str(self.base_dir)
@@ -169,33 +225,117 @@ class HeadlessInstance:
         # собранному бандлу и host-инъекции (профиль пользователя) нужны
         # только ей.
         env["WSC_NODE_MODULE"] = str(self.cfg.opencode_dist_entry)
+        # Корни доверия для node: в обычном терминале тестовые стенды банка
+        # подписаны `SberCA Test Ext G2`, которого нет ни в bundle Mozilla, ни
+        # в /etc/ssl/certs, — без этого MCP падает на TLS. Бандл собирается в
+        # log_dir из NSS, системного хранилища и уже выставленных env-файлов.
+        if self.ca_bundle is not None:
+            env["NODE_EXTRA_CA_CERTS"] = str(self.ca_bundle)
         env["OPENCODE_PORT"] = str(self.port)
         env["WSC_USER_LOCALE"] = "ru"
         env["WSC_INJECTIONS"] = json.dumps(self._injections(), ensure_ascii=False)
+        # Защита приложения (блок `<self-protection>` в системном промте) и
+        # куки для `customFetch` sidecar'а. По этим кукам ходят MCP-серверы с
+        # `useUserCreds` (corpsearch) и встроенные тулы (corp_search, PoHelper,
+        # /models) — как apiFetch в desktop, который прикрепляет Cookie и
+        # User-Agent к каждому запросу вне локального прокси.
+        base_override = Path(env["OPENCODE_BASE_DIR"]) if env.get("OPENCODE_BASE_DIR") else None
+        env["OPENCODE_SELF_PROTECTION"] = self_protection_value(
+            self.cfg.desktop_package(),
+            base=base_override,
+            # `Global.Path.config` = OPENCODE_CONFIG_DIR ?? base/config.
+            config_dir=Path(env["OPENCODE_CONFIG_DIR"]) if env.get("OPENCODE_CONFIG_DIR") else None,
+            # userData у desktop различается по каналу (`wsc` / `wsc.dev`).
+            channel=self.cfg.opencode_channel,
+        )
+        env["WSC_SESSION_COOKIES"] = normalize_cookies("", self.cfg.session_cookies)
+        # Desktop-сборка всегда выключает реплей `functions_state_id`
+        # (.env.development/.env.production: FUNCTIONS_STATE_ID_TRANSLATE_DISABLED
+        # = "true", server.ts:449 → env sidecar'а). С включённым реплеем
+        # gateway отвечает 422 «Function calls count does not match function
+        # results count» уже на втором подряд вызове инструмента: id,
+        # выданный на первом вызове, не согласуется с историей из двух вызовов
+        # (проверено реплеем: со state id — 422, без них — 200).
+        env["FUNCTIONS_STATE_ID_TRANSLATE_DISABLED"] = "true"
+        # Тот же набор в файле: launcher перечитывает его на каждом запросе,
+        # поэтому re-login по ходу кейса подхватывается без перезапуска.
+        env["WSC_SESSION_COOKIES_FILE"] = str(self._cookies_file())
+        self._write_cookies_file()
+        env["WSC_SHARED_API_ORIGIN"] = self.cfg.shared_api_origin
         return env
+
+    def _cookies_file(self) -> Path:
+        return self.log_dir / "session-cookies.txt"
+
+    def _write_cookies_file(self) -> None:
+        """Сохранить текущие Sudir-куки для launcher customFetch."""
+        try:
+            self._cookies_file().parent.mkdir(parents=True, exist_ok=True)
+            self._cookies_file().write_text(
+                normalize_cookies("", self.cfg.session_cookies), encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     def _injections(self) -> dict:
         """Host-инъекции для `setInjections` (как spawnLocalServer).
 
         Пустой `userInfo` не передаём: `setInjections` мерджит поля, и
-        `undefined` затёр бы значение (server.ts:217-227).
+        `undefined` затёр бы значение (server.ts:217-227). `systemMcp` —
+        платформенные MCP-серверы из ресурсов desktop: пока corpsearch
+        подключён, opencode строит `<mcp-routing-guidance>`, убирает
+        встроенный corp_search из видимых тулов и добавляет lazy-каталог.
         """
         injections: dict = {"userLocale": "ru"}
         if self.user_info is not None and self.user_info.description:
             injections["userInfo"] = self.user_info.description
+        system_mcp = injection_from_config(
+            self.cfg.repo_root,
+            self.cfg.shared_api_origin,
+            self.cfg.corp_search_url,
+            os.environ.get("GIGATOOL_SYSTEM_MCP"),
+        )
+        if system_mcp:
+            injections["systemMcp"] = system_mcp
         return injections
+
+    def enabled_system_mcp(self) -> tuple:
+        """Имена включённых платформенных MCP (их ждём перед первым промтом)."""
+        entries = self._injections().get("systemMcp") or {}
+        return tuple(name for name, entry in entries.items() if entry.get("enabled"))
 
     # ------------------------------------------------------- sudir session
     def _apply_relogin(self, header: str) -> None:
-        """Свежие куки после re-login: env, конфиг и работающий прокси."""
+        """Свежие IFT-куки после Sudir re-login.
+
+        Обновляет сессию профиля/MCP/поиска (env + файл для `customFetch`).
+        Прокси моделей трогаем только в `ift`: там это одна и та же сессия. В
+        `prod` прокси ходит прод-куками, и подмена их IFT-сессией сломала бы
+        шлюз.
+        """
         os.environ["GIGACHAT_SESSION_COOKIES"] = header
         self.cfg.session_cookies = _sudir.header_to_dict(header)
+        if self.cfg.auth_mode == "ift" and self.proxy is not None:
+            self.proxy.set_cookie_header(header)
+        self._write_cookies_file()
+
+    def _apply_gateway_relogin(self, header: str) -> None:
+        """Свежие прод-куки шлюза моделей (окно Electron).
+
+        Меняет только gateway-состояние: прокси и `cfg.gateway_cookies`. IFT-
+        сессия профиля/MCP остаётся нетронутой.
+        """
+        self.cfg.gateway_cookies = _sudir.header_to_dict(header)
         if self.proxy is not None:
             self.proxy.set_cookie_header(header)
+        self._write_gateway_cookies_file()
 
     @property
     def session_expired_count(self) -> int:
-        return self.relogin.count
+        counts = [self.relogin.count]
+        if self.gateway_relogin is not None:
+            counts.append(self.gateway_relogin.count)
+        return sum(counts)
 
     def _relogin(self, reason: str, force: bool = False) -> bool:
         """Повторный Sudir-логин (см. `auth.relogin`)."""
@@ -211,48 +351,90 @@ class HeadlessInstance:
         """
         from ..auth.electron_login import ElectronLogin
 
-        return ElectronLogin(self.cfg, log_dir=self.log_dir).login()
+        return ElectronLogin(
+            self.cfg, log_dir=self.log_dir, origin=self.cfg.gateway_origin
+        ).login()
+
+    def _gateway_cookies_file(self) -> Path:
+        return self.log_dir / "gateway-cookies.txt"
+
+    def _load_gateway_cookies(self) -> None:
+        """Подхватить сохранённую прод-сессию шлюза (если env не задан)."""
+        if self.cfg.gateway_cookies:
+            return
+        try:
+            header = self._gateway_cookies_file().read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if header:
+            self.cfg.gateway_cookies = _sudir.header_to_dict(header)
+
+    def _write_gateway_cookies_file(self) -> None:
+        """Сохранить прод-куки шлюза рядом с IFT-куками инстанса.
+
+        Как `session-cookies.txt`: launcher перечитывает IFT-файл, а этот
+        нужен только для переиспользования прод-сессии между стартами.
+        """
+        try:
+            header = normalize_cookies("", self.cfg.gateway_cookies)
+            self._gateway_cookies_file().parent.mkdir(parents=True, exist_ok=True)
+            self._gateway_cookies_file().write_text(header, encoding="utf-8")
+        except OSError:
+            pass
 
     def _ensure_prod_session(self) -> None:
-        """Прод: получить валидную сессию до старта прокси/сервера.
+        """Прод: получить валидную сессию шлюза моделей до старта прокси.
 
         Парольного входа в проде нет (IdP отдаёт только клиентский
         сертификат), поэтому сессию добывает окно Electron. Сохранённые куки
         используются, если они живы: окно открывается только при 401.
         """
-        header = normalize_cookies("", self.cfg.session_cookies)
-        if header and self.relogin.verify(header) == 200:
+        self._load_gateway_cookies()
+        header = normalize_cookies("", self.cfg.gateway_cookies)
+        if header and self.gateway_relogin and self.gateway_relogin.verify(header) == 200:
             return
         if header:
             print(
-                "[sudir] прод: сохранённые куки невалидны — открываю окно входа",
+                "[sudir] прод: сохранённые куки шлюза невалидны — открываю окно входа",
                 file=sys.stderr,
             )
         else:
-            print("[sudir] прод: кук нет — открываю окно входа (Electron)", file=sys.stderr)
-        if not self.relogin.login("preflight", force=True):
+            print("[sudir] прод: кук шлюза нет — открываю окно входа (Electron)", file=sys.stderr)
+        if not self.gateway_relogin or not self.gateway_relogin.login("preflight", force=True):
             raise InstanceError(
                 "не удалось получить прод-сессию: окно Electron не вернуло валидные куки. "
                 f"Лог: {self.log_dir / 'electron-login.log'}"
             )
 
     def _ensure_fresh_session(self) -> None:
-        """Pre-flight перед подъёмом инстанса: проверить куки через
-        session-check и при необходимости перелогиниться."""
-        if self.cfg.auth_mode == "prod":
-            self._ensure_prod_session()
-            return
-        if not self.cfg.session_cookies:
-            return
+        """Pre-flight перед подъёмом инстанса.
+
+        IFT-сессия (профиль/MCP/поиск) проверяется ВСЕГДА, при любом
+        `auth_mode` — это dev-инвариант desktop. В `prod` дополнительно
+        проверяется отдельная сессия шлюза моделей.
+        """
         header = normalize_cookies("", self.cfg.session_cookies)
         if header:
             self.relogin.ensure_fresh(header)
+        elif self.cfg.auth_mode != "ift":
+            print(
+                "[sudir] IFT-кук нет: профиль, MCP и корп-поиск будут недоступны "
+                "(модели при этом работают по своей сессии)",
+                file=sys.stderr,
+            )
+        if self.cfg.auth_mode == "prod":
+            self._ensure_prod_session()
 
     def _on_session_expired(self, status: int, url: str) -> None:
         """Слушатель прокси: upstream вернул 401 — пробуем перелогиниться
-        (как desktop: session expired -> re-login)."""
+        (как desktop: session expired -> re-login).
+
+        В `prod` перелогинивается ПРОД-сессия шлюза (Electron), в `ift` —
+        общая Sudir-сессия.
+        """
         print(f"[sudir] upstream вернул {status} (сессия истекла): {url}", file=sys.stderr)
-        self.relogin.login("session-expired")
+        relogin = self.gateway_relogin or self.relogin
+        relogin.login("session-expired")
 
     # ------------------------------------------------------------------ run
     def _start_proxy(self) -> str:
@@ -265,7 +447,14 @@ class HeadlessInstance:
         if self.cfg.auth_mode == "cert":
             self.proxy = CertProxy(self.cfg).start(log_dir=self.log_dir)
             return self.proxy.base_url or ""
-        self.proxy = GigachatProxy(self.cfg, port=free_port(), upstream=self.cfg.gigachat_upstream)
+        # Куки прокси — сессия ШЛЮЗА (в `prod` отдельная), не IFT-сессия MCP.
+        gateway_cookies = self.cfg.gateway_cookies or self.cfg.session_cookies
+        self.proxy = GigachatProxy(
+            self.cfg,
+            port=free_port(),
+            upstream=self.cfg.gigachat_upstream,
+            cookie_header=normalize_cookies("", gateway_cookies),
+        )
         # 401 от upstream -> авто re-login + подмена куки прокси на лету.
         self.proxy.attach_session_expired_listener(self._on_session_expired)
         self.proxy.start(log_dir=self.log_dir)
@@ -333,12 +522,18 @@ class HeadlessInstance:
         # передаёт sidecar'у host-инъекции через setInjections — так же, как
         # desktop грузит бандл через алиас virtual:opencode-server. Node (не
         # bun): бандл target=node и импортирует node:sqlite.
-        cmd = [cfg.node_bin, str(cfg.desktop_launcher)]
+        cmd = sidecar_command(cfg.node_bin, cfg.desktop_launcher)
+        env = self._build_server_env(proxy_base)
         with open(self.server_log_path, "wb") as out:
+            # Шапка пишется тем же fd до exec'а: node дописывает свой вывод
+            # после неё, смещение файла общее. Нужна, чтобы после прогона было
+            # видно, с какими флагами и TLS-окружением стартовал sidecar.
+            out.write(sidecar_banner(cmd, env).encode())
+            out.flush()
             self.process = subprocess.Popen(
                 cmd,
                 cwd=str(cfg.opencode_package()),
-                env=self._build_server_env(proxy_base),
+                env=env,
                 stdout=out,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -347,7 +542,12 @@ class HeadlessInstance:
     def start(self, wait_ready: bool = True) -> "HeadlessInstance":
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        # 0) Виртуальный X-дисплей (для render-verify скиллов Electron).
+        # 0) Корни доверия: desktop проверяет TLS через Chromium/Electron и на
+        #    dev-канале игнорирует ошибки сертификата для корпоративных хостов.
+        #    Голый Node так не умеет, поэтому отдаём ему те же анкоры бандлом.
+        self.ca_bundle = build_bundle(self.log_dir / "system-ca.pem")
+
+        # 0.1) Виртуальный X-дисплей (для render-verify скиллов Electron).
         self.xvfb = XvfbDisplay(self.cfg.xvfb_display, enabled=self.cfg.xvfb_auto)
         self.xvfb.start()
 

@@ -16,7 +16,6 @@ class Processor(BaseProcessor):
 
     def build_raw_structure(self, artifact):
         artifact.text = self.build_text(artifact)
-        artifact.loaded_attributes.add("text")
         if Path(artifact.path).suffix.lower() == ".json":
             return json.loads(artifact.text)
         return None

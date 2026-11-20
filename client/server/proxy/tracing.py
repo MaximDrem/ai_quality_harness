@@ -5,14 +5,22 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
 import urllib.parse
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 RESP_SNIPPET_BYTES = 4000
 RESP_SNIPPET_TEXT = 800
+
+# Дамп полного тела запроса (для сверки системного промта с desktop).
+# Файл на уникальное тело: имя — первые 12 hex sha1, поэтому повторы
+# (retry, поллинг) перезаписывают один и тот же файл.
+DUMP_DIR_NAME = "requests"
+_DUMP_HASH_CHARS = 12
 
 _IMAGE_UUID_RE = re.compile(
     r'<img\s+src="([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"',
@@ -111,6 +119,26 @@ def finish_trace(rec: Dict, t0: float) -> Dict:
     return rec
 
 
+def dump_request_body(directory, body: Optional[bytes]) -> str:
+    """Записать тело запроса в `<directory>/<sha1-12>.json`, вернуть путь.
+
+    Сниппетов в raw.log недостаточно, чтобы сверить системный промт с
+    desktop: режем по 300 символов. Здесь тело сохраняется целиком (это
+    ровно то, что ушло в upstream), а дедуп по содержимому не даёт копиться
+    одинаковым файлам. Ошибки записи не должны ломать запрос — возвращаем "".
+    """
+    if not body:
+        return ""
+    try:
+        digest = hashlib.sha1(body).hexdigest()[:_DUMP_HASH_CHARS]
+        target = Path(directory) / f"{digest}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+    except OSError:
+        return ""
+    return str(target)
+
+
 def browser_origin_referer(upstream: str) -> Tuple[str, str]:
     """(Origin, Referer) от origin upstream — replay браузерных заголовков,
     снятых при Sudir-логине (см. sudir-auth.ts / apiClient.ts)."""
@@ -122,10 +150,12 @@ def browser_origin_referer(upstream: str) -> Tuple[str, str]:
 
 
 __all__ = [
+    "DUMP_DIR_NAME",
     "RESP_SNIPPET_BYTES",
     "RESP_SNIPPET_TEXT",
     "build_request_trace",
     "apply_response_trace",
+    "dump_request_body",
     "finish_trace",
     "browser_origin_referer",
 ]

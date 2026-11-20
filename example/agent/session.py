@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import time
 from pathlib import Path
@@ -50,15 +51,10 @@ async def run_case(
     render_dir = runs_dir / "render_artifact"
     if render_dir.exists():
         shutil.rmtree(render_dir, ignore_errors=True)
-    snapshot_dir = runs_dir / "intermediate_artifacts"
-    if snapshot_dir.exists():
-        shutil.rmtree(snapshot_dir, ignore_errors=True)
-
     attachment_paths = resolve_attachment_paths(case)
-    collector = ArtifactCollector(case, work_dir, snapshot_dir)
+    collector = ArtifactCollector(case, work_dir)
     output_paths: List[str] = []
     collected_questions: List[Dict[str, Any]] = []
-    event_index = 0
 
     session_kwargs: Dict[str, Any] = {"work_dir": str(work_dir), "model": model}
     if auth_mode:
@@ -73,16 +69,19 @@ async def run_case(
                 proxy = session.instance.proxy if session.instance else None
                 attach_logger = getattr(proxy, "attach_logger", None)
                 if callable(attach_logger):
-                    attach_logger(raw.write_api_trace)
+                    # Полные тела запросов — для сверки промта с desktop
+                    # (`<run>/requests/<sha1>.json`). Отключается
+                    # GIGATOOL_DUMP_REQUESTS=0, если не нужны.
+                    dump_dir = runs_dir / "requests" if os.environ.get("GIGATOOL_DUMP_REQUESTS", "1") != "0" else None
+                    attach_logger(raw.write_api_trace, dump_dir=dump_dir)
                 session.create_session(title=f"run-{case.id}")
 
                 def _consume_events(message: str, attachments: Optional[List[str]] = None) -> None:
-                    nonlocal output_paths, collected_questions, event_index
+                    nonlocal output_paths, collected_questions
                     kwargs: Dict[str, Any] = {"dangerously_skip_permissions": True}
                     if attachments:
                         kwargs["attachments"] = attachments
                     for event in session.actions(message, **kwargs):
-                        event_index += 1
                         result.events.append(event)
                         result.text_outputs += event.text_outputs
                         result.reasonings += event.reasonings
@@ -95,7 +94,6 @@ async def run_case(
                         if event.type == "session.error":
                             result.error = extract_error(event)
                         collected_questions += extract_questions(event)
-                        collector.capture_event(event, event_index)
                         record_event(event, raw)
                         human_log.write_event(event)
                         if collected_questions:

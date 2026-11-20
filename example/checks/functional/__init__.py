@@ -104,8 +104,15 @@ def run_functional_check(check: Check, context: ArtifactContext, user_phrase: st
         handler = _load_handler(name)
         module = sys.modules[handler.__module__]
         required = {attribute} | set(getattr(module, "REQUIRES", set()))
+        if not context.processed:
+            raise ValueError("ArtifactContext должен быть обработан processors до checks")
         for required_attribute in required:
-            context.materialize(selected, required_attribute, check.processor)
+            if required_attribute in {"path", "tool_calls"}:
+                continue
+            for artifact in selected:
+                error = artifact.processing_errors.get(required_attribute) or artifact.processing_errors.get("processor")
+                if error:
+                    raise ValueError(f"{artifact.name}: {required_attribute}: {error}")
     except Exception as error:
         return unavailable(
             check,

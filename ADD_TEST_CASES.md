@@ -31,18 +31,17 @@ metric_groups:
 ```yaml
 artifacts:
   - name: extracted
-    stage: intermediate
     type: .md
     path: "*-ref/*.md"
     required: true
   - name: deck
-    stage: final
+    is_final_result: true
     type: .pptx
     path: "output/*.pptx"
     required: true
 ```
 
-`path` — путь или glob относительно `work_dir`; для файлового артефакта обязателен `type` или `path`. Пути из свободного текста распознаются только для типов, явно объявленных в YAML кейса. Вложения:
+`path` — путь или glob относительно `work_dir`; для файлового артефакта обязателен `type` или `path`. `is_final_result: true` указывается только у финальных файлов, у вспомогательных артефактов флаг отсутствует. Пути из свободного текста распознаются только для типов, явно объявленных в YAML кейса. Вложения:
 
 ```yaml
 attachments:
@@ -163,18 +162,14 @@ JudgeResult = ...
 class Processor:
     extensions = {".custom"}
 
-    def process(self, artifact, attributes):
-        for attribute in attributes:
-            if attribute == "text":
-                artifact.text = ...
-            elif attribute == "raw_structure":
-                artifact.raw_structure = ...
-            elif attribute == "rendered_photos":
-                artifact.rendered_photos = ...
-            artifact.loaded_attributes.add(attribute)
+    def process(self, artifact):
+        artifact.text = ...
+        artifact.raw_structure = ...
+        artifact.serialized_raw_structure = ...
+        artifact.rendered_photos = ...
 ```
 
-Процессор заполняет атрибуты, но не выбирает проверки.
+До checks система передаёт весь `ArtifactContext` в `process_context()`. Процессор выбирается по YAML override или расширению и сразу заполняет все свои атрибуты. Checks не вызывают processors.
 
 ## 7. Финальный ответ без файла
 
@@ -183,7 +178,6 @@ class Processor:
 ```yaml
 artifacts:
   - name: final_message
-    stage: final
     kind: message
     required: true
 

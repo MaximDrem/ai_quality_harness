@@ -26,6 +26,7 @@ from example.artifacts import ArtifactCollector
 from example.checks.functional import run_functional_check
 from example.judge.runner import run_judge
 from example.models import Artifact, ArtifactContext, Check, TestCase
+from example.processors import process_context
 
 
 class ToolTests(unittest.TestCase):
@@ -45,7 +46,7 @@ class ToolTests(unittest.TestCase):
             event = SimpleNamespace(tool_calls=[call], artifacts=[], text_outputs=[])
             result = SimpleNamespace(artifacts=[], events=[event])
             case = TestCase(id="tools", user_phrase="test", skill="demo", artifact_type=".md")
-            context = ArtifactCollector(case, work, work / "snapshots").finalize(result, [])
+            context = ArtifactCollector(case, work).finalize(result, [])
             artifact = context.select(["final"])[0]
             self.assertEqual(len(artifact.tool_calls), 1)
             self.assertEqual(artifact.tool_calls[0]["output"], "saved successfully")
@@ -65,7 +66,7 @@ class ToolTests(unittest.TestCase):
             artifacts=["final_message"],
             options={"tool": "write"},
         )
-        result = run_functional_check(check, ArtifactContext(items=[artifact]))
+        result = run_functional_check(check, ArtifactContext(items=[artifact], processed=True))
         self.assertTrue(result.success)
         self.assertEqual(result.input_attribute, "tool_calls")
 
@@ -81,7 +82,7 @@ class ToolTests(unittest.TestCase):
         case = TestCase(id="tools", user_phrase="test", skill="demo", artifact_type="", check_list=[check])
         verdict = SimpleNamespace(success=True, reason="Сохранение подтверждено")
         with patch("example.judge.runner.judge_text", AsyncMock(return_value=verdict)) as judge:
-            results = asyncio.run(run_judge(case, ArtifactContext(items=[artifact])))
+            results = asyncio.run(run_judge(case, ArtifactContext(items=[artifact], processed=True)))
         self.assertTrue(results[0].success)
         self.assertEqual(results[0].input_attribute, "tool_calls")
         self.assertIn("saved", judge.await_args.kwargs["agent_text"])
@@ -95,8 +96,10 @@ class ToolTests(unittest.TestCase):
             check = Check(text="Два слайда", kind="llm", input="raw_structure")
             case = TestCase(id="raw", user_phrase="test", skill="demo", artifact_type=".json", check_list=[check])
             verdict = SimpleNamespace(success=True, reason="Есть два слайда")
+            context = ArtifactContext(items=[artifact])
+            process_context(context)
             with patch("example.judge.runner.judge_text", AsyncMock(return_value=verdict)) as judge:
-                results = asyncio.run(run_judge(case, ArtifactContext(items=[artifact])))
+                results = asyncio.run(run_judge(case, context))
             self.assertTrue(results[0].success)
             self.assertEqual(results[0].input_attribute, "raw_structure")
             self.assertIn('"slides": 2', judge.await_args.kwargs["agent_text"])

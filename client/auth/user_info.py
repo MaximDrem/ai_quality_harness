@@ -478,7 +478,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Профиль пользователя (current/person + search-engine/find)")
     ap.add_argument("--print", dest="print_info", action="store_true", help="напечатать описание (по умолчанию)")
     ap.add_argument("--json", action="store_true", help="напечатать поля профиля в JSON")
-    ap.add_argument("--auth-mode", choices=("ift", "prod", "cert"), default=None)
+    ap.add_argument(
+        "--auth-mode",
+        choices=("ift", "prod", "cert"),
+        default=None,
+        help="профиль всегда берётся с ИФТ (dev-ветка desktop); режим влияет только на шлюз моделей",
+    )
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     args = ap.parse_args(argv)
 

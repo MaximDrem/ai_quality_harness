@@ -22,6 +22,7 @@ sys.modules.setdefault("langchain_core.messages", SimpleNamespace(HumanMessage=o
 from example.checks.functional import run_functional_check
 from example.judge.runner import run_judge
 from example.models import Artifact, ArtifactContext, Check, TestCase
+from example.processors import process_context
 
 
 class FinalMessageTests(unittest.TestCase):
@@ -34,7 +35,9 @@ class FinalMessageTests(unittest.TestCase):
             text="word word",
         )
         check = Check(text="repeated", kind="function", handler="text/repeated_words", artifacts=["final_message"])
-        result = run_functional_check(check, ArtifactContext(items=[artifact]))
+        context = ArtifactContext(items=[artifact])
+        process_context(context)
+        result = run_functional_check(check, context)
         self.assertFalse(result.success)
         self.assertEqual(result.artifact_path, None)
         self.assertEqual(len(artifact.results), 1)
@@ -50,8 +53,10 @@ class FinalMessageTests(unittest.TestCase):
         check = Check(text="Ответ полный", kind="llm", input="text", artifacts=["final_message"], metric="Answer")
         case = TestCase(id="message", user_phrase="test", skill="demo", artifact_type="", check_list=[check])
         verdict = SimpleNamespace(success=True, reason="Полный ответ")
+        context = ArtifactContext(items=[artifact])
+        process_context(context)
         with patch("example.judge.runner.judge_text", AsyncMock(return_value=verdict)) as judge:
-            results = asyncio.run(run_judge(case, ArtifactContext(items=[artifact])))
+            results = asyncio.run(run_judge(case, context))
         self.assertTrue(results[0].success)
         self.assertEqual(len(artifact.results), 1)
         self.assertIn("Полный ответ пользователю", judge.await_args.kwargs["agent_text"])

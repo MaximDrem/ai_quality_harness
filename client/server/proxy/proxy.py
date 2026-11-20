@@ -25,11 +25,12 @@ mTLS-сертификаты (gigakeys) больше не нужны.
 from __future__ import annotations
 
 import http.server
+import os
 import socket
 import socketserver
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from ...core.config import ClientConfig
 from ...core.errors import InstanceError
@@ -79,11 +80,17 @@ class GigachatProxy:
         cfg: ClientConfig,
         port: Optional[int] = None,
         upstream: Optional[str] = None,
+        cookie_header: Optional[str] = None,
     ):
         self.cfg = cfg
         self.port = port or free_port()
         self.upstream = upstream or cfg.gigachat_upstream
-        self.cookie_header: str = normalize_cookies("", cfg.session_cookies)
+        # Куки ШЛЮЗА МОДЕЛЕЙ: в `ift`/`cert` это IFT-сессия, в `prod` — отдельная
+        # прод-сессия (gateway_cookies), чтобы MCP/профиль не уехали на прод.
+        if cookie_header is None:
+            gateway_cookies = getattr(cfg, "gateway_cookies", None) or cfg.session_cookies
+            cookie_header = normalize_cookies("", gateway_cookies)
+        self.cookie_header: str = cookie_header
         self.upstream_timeout: float = float(getattr(cfg, "gigachat_upstream_timeout", 300.0))
         self.insecure_tls: bool = bool(getattr(cfg, "insecure_tls", True))
         self.base_url: Optional[str] = None
@@ -99,20 +106,35 @@ class GigachatProxy:
         #  * _sink — потокобезопасный callable(rec: dict), вызывается в момент
         #    обработки запроса (пишет в raw.log кейса онлайн).
         #  * _trace — in-memory «хвост» последних записей как страховка/отладка.
+        #  * _dump_dir — если задан, полное тело каждого запроса кладётся в
+        #    этот каталог (сверка промта байт-в-байт с desktop).
         self._sink: Optional[Callable[[Dict], None]] = None
+        self._dump_dir: Optional[str] = None
         self._trace_lock = threading.Lock()
         self._trace: List[Dict] = []
 
     # ------------------------------------------------------------- listeners
-    def attach_logger(self, sink: Callable[[Dict], None]) -> None:
+    def attach_logger(
+        self,
+        sink: Callable[[Dict], None],
+        dump_dir: Optional[Union[str, "os.PathLike[str]"]] = None,
+    ) -> None:
         """Привязать online-sink, принимающий dict-трейс каждого API-запроса.
 
         `sink` — callable(rec: dict); вызывается в момент прохода трафика (не по
         завершении кейса). Для параллельных инстансов каждый прокси
         привязывается к своему raw.log кейса.
+
+        `dump_dir` — каталог для полных тел запросов (`<run>/requests`).
         """
         with self._trace_lock:
             self._sink = sink
+            self._dump_dir = str(dump_dir) if dump_dir is not None else None
+
+    @property
+    def dump_dir(self) -> Optional[str]:
+        """Каталог дампа тел запросов или None (дамп выключен)."""
+        return self._dump_dir
 
     def attach_cookie_listener(self, listener: Optional[Callable[[str], None]] = None) -> None:
         """Слушатель обновления сессионных кук (Set-Cookie от upstream).

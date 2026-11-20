@@ -1,8 +1,8 @@
 """Пути, константы пайплайна и загрузка `.env`.
 
-Все выходные каталоги привязаны к корню проекта (`TEST_AGENT_ROOT`).
 Кейсы лежат в `example/data`, метрики — в `example/metrics`, код проверок и
-процессоры — в `example/checks`.
+процессоры — в `example/checks`. Результаты прогонов и рабочие каталоги
+агента вынесены за пределы репозитория (`TEST_AGENT_ROOT.parent`).
 `load_dotenv()` вызывается первым делом в CLI: конфиг судьи
 (`judge/client.py`) читает переменные окружения в момент импорта, поэтому
 `.env` должен быть в `os.environ` до него.
@@ -16,11 +16,17 @@ from pathlib import Path
 EXAMPLE_DIR = Path(__file__).resolve().parent
 TEST_AGENT_ROOT = EXAMPLE_DIR.parent
 
-# Результаты прогонов: runs/<yyyy-mm-dd_hh-mm>_<model>/run_<n>/<case_id>/.
-RUNS_DIR = TEST_AGENT_ROOT / "runs"
+# Результаты прогонов: <parent>/lib-ai-quality-harness-runs/<yyyy-mm-dd_hh-mm>_<model>/run_<n>/<case_id>/.
+# Каталог лежит рядом с репозиторием, а не внутри него: `work_dir` кейса —
+# это cwd sidecar'а, и `.git` в родителях переключает его в git-режим
+# (`Is directory a git repo: yes` и блок git-правил в system prompt). В
+# desktop чаты живут вне репозитория, поэтому прогоны должны быть такими же.
+RUNS_DIR = TEST_AGENT_ROOT.parent / "lib-ai-quality-harness-runs"
 
-# Рабочие каталоги агентов вне дерева результатов.
-WORK_DIRS_DIR = TEST_AGENT_ROOT / "work_dirs"
+# Служебные рабочие каталоги вне дерева конкретного прогона (например,
+# пробник каталога моделей для `--list-models`). Лежат в корне прогонов,
+# чтобы не плодить папки ни в репозитории, ни рядом с ним.
+WORK_DIRS_DIR = RUNS_DIR / "work_dirs"
 
 # Входные данные: тест-кейсы и отдельно описанные группы метрик.
 CASES_DIR = EXAMPLE_DIR / "data"

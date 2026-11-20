@@ -99,8 +99,13 @@ class ElectronLogin:
         log_dir: Optional[Path] = None,
         hidden: Optional[bool] = None,
         timeout: Optional[float] = None,
+        origin: Optional[str] = None,
     ):
         self.cfg = cfg
+        # Окно входа открывается на стенде ШЛЮЗА МОДЕЛЕЙ (в `prod` — прод),
+        # а не на ИФТ: `shared_api_origin` теперь всегда ИФТ (профиль/MCP), и
+        # прод-куки с него не получить.
+        self.origin = (origin or cfg.gateway_origin).rstrip("/")
         self.log_dir = Path(log_dir) if log_dir else None
         self.hidden = cfg.electron_login_hidden if hidden is None else hidden
         self.timeout = timeout if timeout is not None else cfg.electron_login_timeout
@@ -145,9 +150,9 @@ class ElectronLogin:
 
     def login(self) -> str:
         """Открыть окно входа, вернуть Cookie-заголовок (кидает при неудаче)."""
-        origin = (self.cfg.shared_api_origin or "").strip()
+        origin = self.origin
         if not origin:
-            raise ElectronLoginError("не задан origin SberFriend API (shared_api_origin)")
+            raise ElectronLoginError("не задан origin шлюза моделей (gateway_origin)")
 
         electron = self.electron_bin()
         entry = self.entry
@@ -267,10 +272,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         os.environ["GIGATOOL_PROD_SHARED_API_URL_ORIGIN"] = args.origin.rstrip("/")
 
     cfg = ClientConfig()
-    if args.origin:
-        cfg.shared_api_origin = args.origin.rstrip("/")
     cfg = cfg.resolve()
-    login = ElectronLogin(cfg, hidden=args.hidden or None, timeout=args.timeout)
+    login = ElectronLogin(cfg, hidden=args.hidden or None, timeout=args.timeout, origin=args.origin)
     try:
         header = login.login()
     except ElectronLoginError as e:

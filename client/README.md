@@ -86,33 +86,43 @@ client (Python)
 | Запуск sidecar'а | `import()` бандла `dist/node/node.js` в Node-рантайме Electron (алиас `virtual:opencode-server`) → `Server.listen` | `server/desktop_launcher.mjs` под `node`: тот же `import()` + `Server.listen` |
 | Сборка бандла | `scripts/predev.ts`: `cd packages/opencode && bun script/build-node.ts` перед стартом | `_build_sidecar()` при каждом старте инстанса, лог — `build.log` |
 | Профиль в промпте | `user-service.ts` → `spawnLocalServer({ userInfo })` → `setInjections` | `auth/user_info.py` → `WSC_INJECTIONS` → `setInjections` в лаунчере |
+| Блок `<self-protection>` | `self-protection.ts::selfProtectionValue()` → env `OPENCODE_SELF_PROTECTION` | `server/self_protection.py` (те же пути: appPath, resources, `userData` канала, `~/.wsc`) |
+| Платформенные MCP | `system-mcp-config.ts` + `computeSystemMcpInjection` → `setInjections({ systemMcp })` | `server/system_mcp.py` → `WSC_INJECTIONS.systemMcp` |
+| Куки и лимит заголовков для `customFetch` | `apiFetch` прикрепляет Cookie/UA/Origin к запросам вне прокси и ходит через `undici.fetch` с `Agent({maxHeaderSize: 128 КиБ})` — gateway отдаёт блок `Set-Cookie` ~16 КБ (дефолт undici 16 КиБ → `UND_ERR_HEADERS_OVERFLOW`) | `server/user_fetch.mjs::makeUserFetch()`: то же (куки из `session-cookies.txt`, `Agent({maxHeaderSize: 1 МиБ})`), плюс `--max-http-header-size` в команде спавна — на весь процесс sidecar'а |
+| Доверие корпоративному CA | Electron на dev-канале игнорирует ошибку сертификата для любого хоста (`app.ts`, `certificate-error`), а `apiFetch` ходит в корпоративные через `Agent({connect: {rejectUnauthorized: false}})` (`apiClient.ts:205-228`). Листовой серт тестовых стендов выпущен внутренним `SberCA Test Ext G2`, которого нет ни в bundle Mozilla, ни в `/etc/ssl/certs` | Та же политика в `server/user_fetch.mjs::shouldRejectUnauthorized()`: `*.sberbank`/`*.sbrf`/`*.sber*` и dev-канал — нестрогий агент. Плюс на старте собирается сводный CA-бандл (`server/system_ca.py`: NSS + `/etc/ssl/certs` + `runtime-ca-*.pem` + env) в `NODE_EXTRA_CA_CERTS` — он держит строгий путь (прод-канал, не корпоративные хосты) |
+| Реплей `functions_state_id` | `.env.development`/`.env.production`: `FUNCTIONS_STATE_ID_TRANSLATE_DISABLED="true"` → env sidecar'а (`server.ts:449`), id серверной истории вызовов на провод не уходят | тот же флаг в `_build_server_env` (иначе gateway отвечает 422 «Function calls count does not match function results count» на втором подряд вызове инструмента) |
+| Готовность MCP к первому промту | пользователь пишет уже после `connected` | `AgentSession.wait_for_system_mcp()` ждёт терминальный статус `/mcp` |
 | Подключение к opencode | Basic-auth `opencode:<uuid>`, `?directory=` для GET / `x-opencode-directory` | то же (`http/client.py`) |
 | messageID | клиентский ULID `Identifier.ascending("msg")` | `core/ids.ascending("msg")`, передаётся в `prompt_async` |
 | Отправка промпта | `POST /session` → `prompt_async` (204), результат — только SSE | то же |
 | SSE | вечный цикл `/global/event`, реконнект 250 мс, heartbeat-watchdog 15 с, `Last-Event-ID` | `http/event_stream.py` (те же константы) |
-| Прокси к GigaChat | `proxy.ts`: UA `GigaChat-*`, срез `authorization`/`cookie`, стрим; `apiFetch`: Origin/Referer, 401 → session expired (throttle 5 с), Set-Cookie в банку | `server/proxy/` (то же; каталог `/models` — объекты шлюза без изменений), режим `cert` — сам `scripts/proxy.ts` |
+| Прокси к GigaChat | `proxy.ts`: UA `GigaChat-*`, срез `authorization`/`cookie`, стрим; `apiFetch`: Origin/Referer, 401 → session expired (throttle 5 с), Set-Cookie в банку | `server/proxy/` (то же; каталог `/models` — объекты шлюза без изменений), режим `cert` — сам `scripts/proxy.ts` за прозрачным tee для дампа/трейса (`server/proxy/tee.py`) |
 | Сбои генерации | сервер сам ретраит провайдера (до 8 попыток, 2с→30с), сессия продолжает генерацию; после исчерпания — `session.error` + idle | `_wait_for_idle` не отваливается на retry, собирает `result.retries`/`error_data`; при зависании — `abort` |
 | Sudir-авторизация | куки + verify + re-login при 401 | `auth/sudir.py` + `auth/relogin.py` (см. ниже) |
 
 ## Режимы авторизации: `auth_mode`
 
-От режима зависят три вещи сразу: транспорт к моделям, канал сборки бандла
-(`OPENCODE_CHANNEL`) и стенд SberFriend API (origin для Sudir, профиля и
-корпоративного поиска). Канал не косметика: от него зависит серверный бэкенд
+От режима зависят ДВЕ вещи: транспорт к моделям и канал сборки бандла
+(`OPENCODE_CHANNEL`). Канал не косметика: от него зависит серверный бэкенд
 (`HTTPAPI_DEFAULT_ON_CHANNELS` в `flag.ts`: на `dev` включается
 `effect-httpapi`, на `prod` остаётся `hono`) и имя файла БД.
 
+**Всё остальное не зависит от режима.** Профиль пользователя, платформенные
+MCP (`corpsearch`) и корпоративный поиск берутся из dev-конфигурации desktop
+и всегда ходят на ИФТ (`SHARED_API_URL`, BASE_PATH `/ext`). Это инвариант
+сравнения системных промтов: при смене `auth_mode` промт не меняется.
+
 | `auth_mode` | Канал сборки | Бэкенд | Транспорт к GigaChat | Обязательные env |
 |---|---|---|---|---|
-| `ift` (по умолчанию) | `dev` | `effect-httpapi` | Python cookie-прокси → ИФТ-шлюз, Sudir-куки | `GIGACHAT_SESSION_COOKIES` (или креды для re-login) |
-| `prod` | `prod` | `hono` | Python cookie-прокси → прод-шлюз, Sudir-куки из окна Electron | `GIGATOOL_PROD_SHARED_API_URL_ORIGIN` (+ Electron; куки — по желанию) |
-| `cert` | `dev` | `effect-httpapi` | `scripts/proxy.ts` (mTLS), куки не нужны для моделей | `GIGACHAT_CERT_PATH` + `GIGACHAT_KEY_PATH` (по умолчанию `packages/desktop-electron/gigakeys/{cert.cert,key.key}`) |
+| `ift` (по умолчанию) | `dev` | `effect-httpapi` | Python cookie-прокси → ИФТ-шлюз, IFT-куки | `GIGACHAT_SESSION_COOKIES` (или креды для re-login) |
+| `prod` | `prod` | `hono` | Python cookie-прокси → прод-шлюз, прод-куки из окна Electron | `GIGATOOL_PROD_SHARED_API_URL_ORIGIN` (+ Electron; куки — по желанию) |
+| `cert` | `dev` | `effect-httpapi` | `scripts/proxy.ts` (mTLS) через Python tee (дамп тел/трейс; `limit` моделей — из каталога IFT), куки не нужны для моделей | `GIGACHAT_CERT_PATH` + `GIGACHAT_KEY_PATH` (по умолчанию `packages/desktop-electron/gigakeys/{cert.cert,key.key}`) |
 
 Задаётся `GIGATOOL_AUTH_MODE` (env) или `--auth-mode` (CLI), в скрипте —
 `AgentSession(..., auth_mode="prod")` / `ClientConfig(auth_mode="cert")`.
 
 `prod` намеренно **не** падает обратно на `SHARED_API_URL`: в `.env` проекта
-там ИФТ, и молча уехать пром-режимом на ИФТ-стенд нельзя — куки host-only,
+там ИФТ, и молча уехать прод-шлюзом на ИФТ-стенд нельзя — куки host-only,
 сессия вернёт 401. Без `GIGATOOL_PROD_SHARED_API_URL_ORIGIN` будет
 `InstanceError` на старте.
 
@@ -122,16 +132,27 @@ client (Python)
 **Важно про `prod`:** прод-IdP (`idp02.auth.sigma.sbrf.ru`, realm `sigma`) не
 имеет парольной формы. На `GET /` он отдаёт 401 «Kerberos Unsupported» и
 альтернативный вход по клиентскому сертификату (`alt.idp02…`, «в поле Тема
-указан ваш логин»). Поэтому `IFT_LOGIN_USER`/`IFT_PASSWORD` для `prod` не
-применимы, и клиент повторяет desktop-сценарий: поднимает **настоящий
-Electron** (`client/server/electron_login.cjs`), открывает `BrowserWindow` на
-`SHARED_API_ORIGIN`, проходит mTLS сертификатом из хранилища ОС, снимает все
-куки сессии и проверяет `/session-check`. Окно видно — как в desktop: в нём
-можно выбрать сертификат или дожать SSO.
+указан ваш логин»). Поэтому `IFT_LOGIN_USER`/`IFT_PASSWORD` к прод-стенду не
+применимы: клиент повторяет desktop-сценарий и поднимает **настоящий
+Electron** (`client/server/electron_login.cjs`), который открывает
+`BrowserWindow` на `GATEWAY_ORIGIN`, проходит mTLS сертификатом из хранилища
+ОС, снимает куки сессии и проверяет `/session-check`. Окно видно — как в
+desktop: в нём можно выбрать сертификат или дожать SSO.
 
-Если `GIGACHAT_SESSION_COOKIES` уже заданы и живы, окно не открывается
+Если прод-куки шлюза уже сохранены (`GIGATOOL_PROD_SESSION_COOKIES` или
+`<log_dir>/gateway-cookies.txt`) и живы, окно не открывается
 (`_ensure_prod_session` сначала проверяет session-check). При 401 от upstream
 re-login тоже идёт через окно Electron, а не по паролю.
+
+Прод-сессия относится ТОЛЬКО к шлюзу моделей. Профиль и MCP в `prod` всё
+равно используют IFT-сессию (`GIGACHAT_SESSION_COOKIES` / Sudir-пароль):
+если её нет, старт не блокируется, но MCP будет `failed`, а промт получит
+`<mcp-temporary-unavailable>`.
+
+Если раньше в `GIGACHAT_SESSION_COOKIES` лежали прод-куки (режим `prod` до
+разделения сессий), их нужно перенести в `GIGATOOL_PROD_SESSION_COOKIES`, а в
+`GIGACHAT_SESSION_COOKIES` держать ИФТ-сессию (или ничего — её обновит
+Sudir-логин по `IFT_LOGIN_*`).
 
 ### Прод-вход через Electron
 
@@ -161,28 +182,32 @@ capabilities (у моделей без image opencode показывает tool 
 а часть инструментов молча пропадает. По той же причине прокси не добавляет в
 тело `reasoning_effort` — это делает только sidecar (`provider/transform.ts`).
 
-## Авторизация: Sudir-куки и один origin
+## Авторизация: Sudir-куки и две сессии (IFT и шлюз)
 
 В режимах `ift`/`prod` mTLS-сертификаты `gigakeys` не нужны — бэкенд ходит на
 SberFriend gateway и авторизуется **Sudir-сессионными куками** (в `cert` —
-наоборот: модели по сертификату, куки только для профиля и поиска). Куки
+наоборот: модели по сертификату, куки только для профиля и поиска). IFT-куки
 берутся из env `GIGACHAT_SESSION_COOKIES` (header-строка `name=value; ...` или
 JSON-объект) либо из `ClientConfig.session_cookies`.
 
 Два правила, без которых всё разваливается:
 
-1. **Один origin на всё.** Origin SberFriend API вычисляется из `auth_mode`
-   (`shared_api_origin`: `prod` → `GIGATOOL_PROD_SHARED_API_URL_ORIGIN`,
-   иначе `SHARED_API_URL`) и используется везде: Sudir-логин, session-check,
-   re-login, профиль, corp-search, upstream прокси. Кука `PLATFORM_SESSION`
-   выдаётся host-only — сессия, полученная для одного стенда, на другом даёт
-   401. Путь шлюза — внешний `/sberfriend-api/api/v1/ext/app/.../gigachat/v1`
-   (на ift-s `/int/app/...` даёт 404 datapower).
+1. **Две сессии, два назначения.** IFT-сессия (`shared_api_origin` =
+   `SHARED_API_URL`, всегда ИФТ) обслуживает Sudir-логин, session-check,
+   профиль, corp-search, MCP и `customFetch` sidecar'а. Сессия шлюза
+   (`gigachat_upstream`: `ift`/`cert` → ИФТ-путь, `prod` →
+   `GIGATOOL_PROD_SHARED_API_URL_ORIGIN`) — только upstream cookie-прокси.
+   Кука `PLATFORM_SESSION` выдаётся host-only: сессия одного стенда на другом
+   даёт 401, поэтому смешивать их нельзя. Путь ИФТ-шлюза — внешний
+   `/sberfriend-api/api/v1/ext/app/.../gigachat/v1` (на ift-s `/int/app/...`
+   даёт 404 datapower); прод-BASE_PATH — `/ext`, для стендов с `/int` —
+   `GIGATOOL_PROD_BASE_PATH`.
 2. **Куки протухают (~13 ч), поэтому есть авто re-login.** Как в desktop
    (`notifyExpired` → повторный логин): инстанс перед стартом проверяет куки
-   через session-check, а при 401 от upstream перелогинивается по кред
-   `IFT_LOGIN_USER/IFT_LOGING` + `IFT_PASSWORD` и на лету подменяет куки
-   прокси. Отключается `GIGATOOL_AUTO_RELOGIN=0`.
+   через session-check, а при 401 от upstream перелогинивается и на лету
+   подменяет куки прокси. IFT-сессия — по кред
+   `IFT_LOGIN_USER/IFT_LOGING` + `IFT_PASSWORD`; прод-сессия шлюза — окном
+   Electron. Отключается `GIGATOOL_AUTO_RELOGIN=0`.
 
 Типичный симптом обоих нарушений — `Model not found: gigachat/<модель>`:
 sidecar не смог получить каталог моделей (`GET /models` → 401/404), молча
@@ -202,19 +227,21 @@ sidecar не смог получить каталог моделей (`GET /mode
 | `GIGATOOL_REPO_ROOT` | корень desktop-ai-app (из `.env`; иначе авто-поиск sibling-каталога) |
 | `GIGATOOL_BUN` | `bun` из PATH (физический путь — в `.env`) |
 | `GIGATOOL_NODEJS` | `node` из PATH — рантайм sidecar'а (нужен ≥ 22: бандл импортирует `node:sqlite`, в Bun 1.3 его нет) |
-| `GIGATOOL_AUTH_MODE` | `ift` (варианты: `ift` / `prod` / `cert`; см. таблицу режимов выше) |
-| `OPENCODE_BASE_DIR` | (не задаём → `~/.gigacat`, как у desktop; можно задать свой на инстанс) |
+| `GIGATOOL_AUTH_MODE` | `ift` (варианты: `ift` / `prod` / `cert`; переключает ТОЛЬКО шлюз моделей и канал сборки) |
+| `OPENCODE_BASE_DIR` | (не задаём → `~/.wsc`, как у desktop; можно задать свой на инстанс) |
 | `GIGATOOL_SKILLS_DIR` | (не задаём → `$OPENCODE_BASE_DIR/config`, т.е. `~/.wsc/config`; каталог, откуда opencode берёт скиллы — выставляется в `OPENCODE_CONFIG_DIR`) |
 | `GIGATOOL_SERVER_USERNAME` | `opencode` (имя Basic-auth) |
 | `GIGATOOL_SERVER_PASSWORD` | случайный UUID на инстанс |
 | `GIGATOOL_MODEL` | `gigachat/GigaChat-3-Ultra` |
 | `GIGATOOL_AGENT` | `build` |
-| `GIGACHAT_SESSION_COOKIES` | — (Sudir-куки; header-строка или JSON-объект) |
+| `GIGACHAT_SESSION_COOKIES` | — (IFT-куки Sudir: профиль, MCP, корп-поиск; header-строка или JSON-объект) |
+| `GIGATOOL_PROD_SESSION_COOKIES` | — (прод-куки ШЛЮЗА моделей; header-строка или JSON-объект; при отсутствии — окно Electron и файл `gateway-cookies.txt` в `log_dir`) |
 | `GIGATOOL_ELECTRON` | — (бинарь Electron для прод-входа; иначе dev-бинарь `packages/desktop-electron/node_modules/electron`, затем PATH) |
 | `GIGATOOL_ELECTRON_TIMEOUT` | `300` (сек, ожидание входа в окне Electron) |
 | `GIGATOOL_ELECTRON_HIDDEN` | `0` (не показывать окно входа: SSO должен пройти сам) |
-| `SHARED_API_URL` | origin SberFriend API для `ift`/`cert`; по умолчанию `https://shared-api.ift-s.sberfriend.delta.sbrf.ru` |
-| `GIGATOOL_PROD_SHARED_API_URL_ORIGIN` | — (**обязателен** при `auth_mode=prod`: origin прод-стенда; `SHARED_API_URL` сюда не подставляется) |
+| `SHARED_API_URL` | origin SberFriend API (ИФТ) — профиль/MCP/поиск при ЛЮБОМ режиме; по умолчанию `https://shared-api.ift-s.sberfriend.delta.sbrf.ru` |
+| `GIGATOOL_PROD_SHARED_API_URL_ORIGIN` | — (**обязателен** при `auth_mode=prod`: origin прод-стенда ТОЛЬКО для шлюза моделей; `SHARED_API_URL` сюда не подставляется) |
+| `GIGATOOL_PROD_BASE_PATH` | `/sberfriend-api/api/v1/ext` (BASE_PATH прод-шлюза; для стендов с `/int` — `/sberfriend-api/api/v1/int`) |
 | `GIGACHAT_CERT_PATH` / `GIGACHAT_KEY_PATH` | `packages/desktop-electron/gigakeys/{cert.cert,key.key}` (mTLS-серты режима `cert`) |
 | `GIGACHAT_PROXY_BASE_URL` | `https://gigachat-ift.sberdevices.delta.sbrf.ru/v1` (куда ходит mTLS-прокси) |
 | `GIGATOOL_CERT_PROXY_PORT` | `0` — занять свободный порт; фактический берётся из stdout прокси |
@@ -231,10 +258,14 @@ sidecar не смог получить каталог моделей (`GET /mode
 | `GIGATOOL_XVFB_DISPLAY` / `GIGATOOL_XVFB_AUTO` | `:99` / `1` (поднимать Xvfb, если `DISPLAY` не задан) |
 | `GIGATOOL_BUILD_TIMEOUT` | `600` (таймаут сборки бандла `bun script/build-node.ts`, сек) |
 | `GIGATOOL_START_TIMEOUT` / `GIGATOOL_HEALTH_TIMEOUT` / `GIGATOOL_IDLE_TIMEOUT` | `300` / `30` / `900` (таймауты, сек) |
+| `GIGATOOL_SYSTEM_MCP` | `corpsearch` (какие платформенные MCP из `resources/system-mcp.json` включать; `none` — выключить все) |
+| `GIGATOOL_DUMP_REQUESTS` | `1` (писать полные тела запросов в `<run>/requests/<sha1>.json`; `0` — выключить; работает во всех `auth_mode`, в `cert` — через tee) |
 
 Логи инстанса лежат в `log_dir` (по умолчанию
 `/tmp/gigatool-headless/<work_dir>`): `build.log` — вывод сборки бандла
-(канал и ошибки `bun`), `server.log` — лаунчер и sidecar.
+(канал и ошибки `bun`), `server.log` — лаунчер и sidecar,
+`session-cookies.txt` — Sudir-куки, которые launcher перечитывает на каждом
+запросе `customFetch` (обновляются после re-login).
 
 Пример набора ключей судьи/стенда — `params_from_env_file` в корне репозитория.
 
@@ -454,6 +485,7 @@ results = runner.run_many(
 | `http/event_stream.py` | SSE-стрим `/global/event` с реконнектом и watchdog |
 | `server/server.py` | `HeadlessInstance`, `create_instance` — сборка бандла, прокси, лаунчер, health |
 | `server/desktop_launcher.mjs` | Node-обёртка sidecar'а: `import()` бандла, `setInjections` (профиль), `Server.listen` — аналог `spawnLocalServer` |
+| `server/user_fetch.mjs` | `customFetch` sidecar'а — порт `apiFetch`: куки/UA/Origin вне прокси и `undici.fetch` через `Agent` с поднятым лимитом заголовков |
 | `server/electron_login.cjs` | Electron-main прод-входа: `BrowserWindow` на origin, mTLS-сертификат из ОС, `cookies.get({})`, `/session-check` — порт `sudir-auth.ts` |
 | `auth/electron_login.py` | `ElectronLogin` — запуск окна входа, чтение кук, фильтр по домену, повторная проверка сессии |
 | `server/cert_proxy.py` | `CertProxy` — mTLS-прокси `scripts/proxy.ts` для `auth_mode=cert` |
@@ -462,7 +494,10 @@ results = runner.run_many(
 | `server/proxy/handler.py` | HTTP-обработчик прокси: форвард, стрим (в т.ч. чтение chunked-тела), 401 → session expired |
 | `server/proxy/models.py` | отбор каталога моделей из ответа шлюза (объекты отдаются как есть: `limit`, `modalities`, `reasoning`) |
 | `server/proxy/cookies.py` | разбор кук из env/JSON в Cookie-заголовок |
-| `server/proxy/tracing.py` | api-trace запросов прокси (пишется в `raw.log`) |
+| `server/proxy/tracing.py` | api-trace запросов прокси (пишется в `raw.log`) и полные тела запросов (`requests/<sha1>.json`) |
+| `server/proxy/tee.py` | прозрачный tee перед `scripts/proxy.ts` в режиме `cert`: дамп тел и api-trace (запрос уходит дальше байт-в-байт), `limit` каталога `/models` — из IFT |
+| `server/self_protection.py` | `OPENCODE_SELF_PROTECTION` — блок `<self-protection>` и запрет путей приложения |
+| `server/system_mcp.py` | платформенные MCP из `resources/system-mcp.json` → `setInjections({ systemMcp })` |
 | `auth/sudir.py` | логин в Sudir, проверка сессии, запись кук в env |
 | `auth/relogin.py` | `SudirRelogin` — авто re-login с cooldown (пароль или внешний `login_fn` для `prod`) |
 | `auth/user_info.py` | `UserInfoService` — профиль сотрудника (`current/person` + `search-engine/find`) → строка `User:` для системного промпта |

@@ -84,7 +84,7 @@ checks:
 
 Сценарий проверяет создание презентации по шаблону пользователя. Текущие кейсы — `US01-01-01…03` на шаблоне AI Technology; остальные кейсы добавляются после появления недостающих шаблонов.
 
-Кейс объявляет вложение `template`, промежуточный `style_reference` (`STYLE.md` на любом уровне `work_dir`) и финальный `presentation`. Метрики задаются наборами независимых функциональных проверок:
+Кейс объявляет вложение `template`, вспомогательный `style_reference` (`STYLE.md` на любом уровне `work_dir`) и финальный `presentation`. Метрики задаются наборами независимых функциональных проверок:
 
 - M1 — `text/template_style_header` проверяет формат заголовка `STYLE.md`, `text/template_style_reference` сверяет имя шаблона с вложением;
 - M3 — `pptx/raw_structure/template_slide_size`, `template_master_theme`, `template_layouts`, `template_used_layouts`, `template_fonts` и `template_text_colors` отдельно проверяют размер, master/theme, наборы и использование layouts, шрифты и цвета текста;
@@ -101,12 +101,14 @@ Artifact
   name, role, path, artifact_type
   text
   raw_structure
+  serialized_raw_structure
   rendered_photos
   tool_calls
   results
+  processing_errors
 ```
 
-Процессор заполняет нужные атрибуты через `process(artifact, attributes)`. Материализация выполняется один раз и только для атрибутов, необходимых выбранным проверкам.
+Перед checks `process_context(context)` обходит все файловые артефакты и выбирает processor по YAML override или расширению. `Processor.process(artifact)` сразу заполняет все поддерживаемые атрибуты. Checks только читают готовые данные; ленивой материализации нет.
 
 Каталог функционального handler определяет основной атрибут:
 
@@ -131,12 +133,11 @@ attachments:
 
 artifacts:
   - name: extracted
-    stage: intermediate
     type: .md
     path: "*-ref/*.md"
     required: true
   - name: deck
-    stage: final
+    is_final_result: true
     type: .pptx
     path: "output/*.pptx"
     required: true
@@ -144,8 +145,9 @@ artifacts:
 
 - Пути вложений считаются от каталога сценария и передаются только с первым сообщением.
 - Пути/glob артефактов считаются от `work_dir`; пути из свободного текста распознаются только по расширениям, явно объявленным в YAML кейса.
-- Проверка выбирает `source`, `intermediate`, `final`, `final_message` или конкретное имя.
-- Промежуточные версии сохраняются в snapshot’ах с `origin_path` и `event_index`.
+- Проверка выбирает `source`, `supporting`, `final`, `final_message` или конкретное имя.
+- `is_final_result: true` указывается только у финальных файлов; у вспомогательных артефактов поле отсутствует.
+- Вспомогательные файлы доступны проверкам, но не влияют на готовность кейса и не дублируются в snapshot’ах.
 - Для прекращения «Продолжить» нужны все обязательные финалы.
 
 Файловый финал сначала ищется по пути из завершённого assistant-ответа. При отсутствии подходящего пути выполняется рекурсивный поиск. `uploads/` и исходные attachments исключены из финальных кандидатов.
@@ -157,7 +159,6 @@ artifacts:
 ```yaml
 artifacts:
   - name: final_message
-    stage: final
     kind: message
     required: true
 ```
@@ -173,7 +174,6 @@ runs/<timestamp>_<opencode_model>/
   run_<n>/<case_id>/
     raw.log
     agent.log
-    intermediate_artifacts/
     render_artifact/
 ```
 

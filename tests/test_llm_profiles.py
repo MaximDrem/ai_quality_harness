@@ -79,7 +79,7 @@ class LlmProfileTests(unittest.TestCase):
         )
         verdict = SimpleNamespace(success=True, reason="ok")
         with patch("example.judge.runner.judge_text", AsyncMock(return_value=verdict)) as judge:
-            asyncio.run(run_judge(case, ArtifactContext(items=[artifact])))
+            asyncio.run(run_judge(case, ArtifactContext(items=[artifact], processed=True)))
         self.assertEqual(judge.await_args.kwargs["scenario"], "sample_profile")
 
     def test_missing_profile_has_clear_error(self):

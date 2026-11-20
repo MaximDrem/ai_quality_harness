@@ -6,6 +6,7 @@
   * `cookies`  — нормализация Cookie-строки;
   * `tracing`  — запись запроса/ответа upstream для raw.log;
   * `handler`  — HTTP-обработчик (форвард + `/models`);
+  * `tee`      — прозрачный хоп перед mTLS-прокси (дамп/трейс в режиме `cert`);
   * `proxy`    — менеджер: банка кук, 401-интерсептор, жизненный цикл.
 
 Публичные имена ре-экспортируются здесь, поэтому снаружи достаточно
@@ -23,11 +24,13 @@ from .proxy import (
     free_port,
     is_port_open,
 )
+from .tee import TeeProxy
 from .tracing import apply_response_trace, build_request_trace
 
 __all__ = [
     "GigachatProxy",
     "GigaChatHandler",
+    "TeeProxy",
     "ThreadingHTTPServer",
     "SESSION_EXPIRED_THROTTLE_MS",
     "GIGACHAT_USER_AGENT",

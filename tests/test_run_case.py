@@ -46,7 +46,7 @@ class FakeSession:
 
 
 class RunCaseTests(unittest.TestCase):
-    def test_auth_skills_attachments_and_intermediate_context(self):
+    def test_auth_skills_attachments_and_supporting_context(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.pptx"
@@ -59,8 +59,8 @@ class RunCaseTests(unittest.TestCase):
                 case_dir=str(root),
                 attachments=[AttachmentSpec(path="source.pptx", name="template")],
                 artifacts=[
-                    ArtifactSpec(name="analysis", artifact_type=".md", stage="intermediate"),
-                    ArtifactSpec(name="result", artifact_type=".pptx", stage="final"),
+                    ArtifactSpec(name="analysis", artifact_type=".md"),
+                    ArtifactSpec(name="result", artifact_type=".pptx", is_final_result=True),
                 ],
             )
             evaluated = AsyncMock(return_value=RunResult(test_case=case))

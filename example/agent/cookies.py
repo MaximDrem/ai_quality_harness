@@ -1,7 +1,9 @@
-"""Обновление cookies Sudir с учётом выбранного auth_mode.
+"""Обновление IFT-кук Sudir.
 
-Для prod аутентификацию выполняет новый клиент через Electron; для остальных
-режимов используется парольный вход при наличии креденшелов в окружении.
+Профиль, MCP и корп-поиск всегда берутся с ИФТ (dev-ветка desktop) при любом
+`auth_mode` — поэтому здесь всегда парольный Sudir-логин на ИФТ. Прод-сессию
+ШЛЮЗА моделей (`auth_mode=prod`) этот скрипт не трогает: её добывает клиент
+через Electron (или она лежит в `GIGATOOL_PROD_SESSION_COOKIES`).
 """
 
 from __future__ import annotations
@@ -16,8 +18,11 @@ from ..config import TEST_AGENT_ROOT
 def refresh_cookies(auth_mode: Optional[str] = None) -> bool:
     mode = (auth_mode or os.environ.get("GIGATOOL_AUTH_MODE") or "ift").strip().lower()
     if mode == "prod":
-        print("[cookies] prod: вход выполнит клиент через Electron", file=sys.stderr)
-        return False
+        print(
+            "[cookies] prod: прод-сессию шлюза добывает клиент через Electron; "
+            "обновляю IFT-куки для профиля/MCP/поиска",
+            file=sys.stderr,
+        )
     try:
         from client import ClientConfig
         from client.auth.sudir import login, verify_session, write_cookies_env
@@ -32,7 +37,9 @@ def refresh_cookies(auth_mode: Optional[str] = None) -> bool:
         return False
 
     try:
-        base = ClientConfig(auth_mode=mode).resolve().shared_api_origin
+        # Профиль/MCP/поиск — всегда ИФТ, поэтому и стенд логина всегда ИФТ
+        # (в `prod` это не требует GIGATOOL_PROD_SHARED_API_URL_ORIGIN).
+        base = ClientConfig(auth_mode="ift").resolve().shared_api_origin
         header = login(username, password, base_url=base)
     except Exception as error:
         print(f"[cookies] Sudir-логин не удался: {error} — оставляю прежние куки", file=sys.stderr)

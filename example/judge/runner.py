@@ -231,7 +231,13 @@ async def _judge_one(
         user_instruction = case.user_phrase if check.use_user_phrase else None
         if attribute not in {"text", "raw_structure", "rendered_photos", "tool_calls"}:
             raise ValueError(f"Неподдерживаемый LLM input: {attribute}")
-        context.materialize(selected, attribute, check.processor)
+        if not context.processed:
+            raise ValueError("ArtifactContext должен быть обработан processors до judge")
+        if attribute != "tool_calls":
+            for artifact in selected:
+                error = artifact.processing_errors.get(attribute) or artifact.processing_errors.get("processor")
+                if error:
+                    raise ValueError(f"{artifact.name}: {attribute}: {error}")
         if attribute == "rendered_photos":
             photos = [photo for artifact in selected for photo in artifact.rendered_photos]
             result = await _judge_vlm(check, user_instruction, photos, semaphore, scenario)
@@ -253,7 +259,7 @@ async def _judge_one(
         elif attribute == "raw_structure":
             chunks = [
                 f"--- {artifact.path or artifact.name} ---\n"
-                + context.serialize_raw_structure(artifact, check.processor)
+                + artifact.serialized_raw_structure
                 for artifact in selected
             ]
             result = await _judge_text(

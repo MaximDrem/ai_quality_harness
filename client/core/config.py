@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from .errors import InstanceError
 
@@ -45,11 +46,15 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
+_GATEWAY_ENDPOINT = "/app/ai-assistant/fs-orchestrator-gateway/long/gigachat/v1"
+
+_IAM_BASE_PATH = "/sberfriend-api/api/v1/ext"
+
 _GATEWAY_PATH = (
     # Тот же путь, что GIGACHAT_BASE_URL в desktop-electron/.env.development:
     # внешний шлюз /ext/app/ (на ift-s путь /int/app/ даёт 404 datapower,
     # а на ift с куками ift-s — 401: куки host-only, стенды не взаимозаменяемы).
-    "/sberfriend-api/api/v1/ext/app/ai-assistant/fs-orchestrator-gateway/long/gigachat/v1"
+    _IAM_BASE_PATH + _GATEWAY_ENDPOINT
 )
 
 # Дефолтный origin ИФТ-стенда, если SHARED_API_URL не задан (значение из
@@ -63,36 +68,70 @@ _CERT_PROXY_UPSTREAM = "https://gigachat-ift.sberdevices.delta.sbrf.ru/v1"
 _AUTH_MODES = ("ift", "prod", "cert")
 
 
-def _shared_api_origin(auth_mode: str) -> str:
-    """Origin SberFriend API для выбранного режима авторизации.
+def _shared_api_origin() -> str:
+    """Origin SberFriend API — всегда ИФТ, как dev-ветка desktop.
 
-    `prod` читает ТОЛЬКО GIGATOOL_PROD_SHARED_API_URL_ORIGIN: в `.env` проекта
-    SHARED_API_URL указывает на ИФТ, и молча уехать с пром-режимом на ИФТ-стенд
-    (или наоборот) нельзя — куки host-only, сессия не подойдёт.
-
-    `ift`/`cert` — SHARED_API_URL (как SHARED_API_URL_ORIGIN в desktop), иначе
-    дефолт ИФТ-стенда.
+    От `auth_mode` НЕ зависит: профиль, MCP и корпоративный поиск берутся из
+    dev-конфигурации desktop при любом режиме (это инвариант сравнения
+    системных промтов). Переключается только шлюз моделей — см.
+    `_gigachat_upstream`.
     """
-    if auth_mode == "prod":
-        origin = os.environ.get("GIGATOOL_PROD_SHARED_API_URL_ORIGIN", "").strip()
-        if not origin:
-            raise InstanceError(
-                "auth_mode=prod требует GIGATOOL_PROD_SHARED_API_URL_ORIGIN "
-                "(origin прод-стенда SberFriend API)"
-            )
-        return origin.rstrip("/")
     origin = os.environ.get("SHARED_API_URL", "").strip()
     return (origin or _IAM_SHARED_API_ORIGIN).rstrip("/")
 
 
-def _gigachat_upstream(origin: str) -> str:
-    """Origin+путь gateway (как GIGACHAT_BASE_URL в desktop-electron).
+def _prod_gateway_origin() -> str:
+    """Origin прод-стенда — только для шлюза моделей в `auth_mode=prod`.
 
-    Один origin для Sudir-логина (sudir_login читает SHARED_API_URL), профиля
-    и API-запросов прокси — иначе host-only куки не подходят и upstream
-    отвечает 401/404, а sidecar сваливается в дефолтный каталог (только
-    GigaChat-3-Ultra) -> «Model not found: gigachat/...»."""
-    return origin.rstrip("/") + _GATEWAY_PATH
+    Читается ТОЛЬКО GIGATOOL_PROD_SHARED_API_URL_ORIGIN: в `.env` проекта
+    SHARED_API_URL указывает на ИФТ, и молча уехать шлюзом на ИФТ-стенд (или
+    наоборот) нельзя — куки host-only, сессия не подойдёт.
+    """
+    origin = os.environ.get("GIGATOOL_PROD_SHARED_API_URL_ORIGIN", "").strip()
+    if not origin:
+        raise InstanceError(
+            "auth_mode=prod требует GIGATOOL_PROD_SHARED_API_URL_ORIGIN "
+            "(origin прод-стенда для шлюза моделей; профиль/MCP/поиск остаются на ИФТ)"
+        )
+    return origin.rstrip("/")
+
+
+def _gigachat_upstream(auth_mode: str, shared_api_origin: str) -> str:
+    """Origin+путь шлюза моделей — единственное, что зависит от `auth_mode`.
+
+    `ift`/`cert` — путь к ИФТ-шлюзу (в `cert` он нужен для каталога моделей:
+    tee берёт `limit`/`modalities` из ИФТ, как `run.sh sert`), `prod` — прод-
+    стенд из `GIGATOOL_PROD_SHARED_API_URL_ORIGIN`. Прод-BASE_PATH по умолчанию
+    тот же `/ext` (рабочий для sigma); стенды с `/int` переопределяют его
+    `GIGATOOL_PROD_BASE_PATH`, как `BASE_PATH` в desktop.
+    """
+    if auth_mode == "prod":
+        origin = _prod_gateway_origin()
+        base_path = os.environ.get("GIGATOOL_PROD_BASE_PATH", "").strip() or _IAM_BASE_PATH
+        return origin.rstrip("/") + base_path.rstrip("/") + _GATEWAY_ENDPOINT
+    return shared_api_origin.rstrip("/") + _GATEWAY_PATH
+
+
+def _cookies_from_env(var_name: str) -> dict:
+    """Разобрать куки из env: header-строка `name=value; ...` или JSON-объект."""
+    raw = os.environ.get(var_name, "").strip()
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        import json as _json
+
+        try:
+            parsed = _json.loads(raw)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    cookies: dict = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, _, v = part.partition("=")
+            cookies[k.strip()] = v.strip()
+    return cookies
 
 
 @dataclass
@@ -111,7 +150,7 @@ class ClientConfig:
     node_bin: str = field(default_factory=lambda: _env("GIGATOOL_NODEJS", "node"))
     # base dir для всех данных opencode (log/data/cache/state/config).
     # По умолчанию (как у desktop, `bun run dev:desktop`) переменная не
-    # выставляется вовсе — бэкенд сам выбирает фолбэк ~/.gigacat. Задаётся
+    # выставляется вовсе — бэкенд сам выбирает фолбэк ~/.wsc. Задаётся
     # только если явно передан env OPENCODE_BASE_DIR или --base-dir.
     opencode_base_dir: Optional[Path] = field(
         default_factory=lambda: (
@@ -139,34 +178,44 @@ class ClientConfig:
     # `ift`  — Sudir-логин + cookie-прокси к ИФТ-шлюзу (прежнее поведение);
     # `cert` — Sudir-логин (нужен профиль) + mTLS-прокси к GigaChat
     #          (`run.sh sert`: серты из packages/desktop-electron/gigakeys);
-    # `prod` — Sudir-логин + cookie-прокси к прод-шлюзу (`run.sh prom`).
-    # От режима зависит и канал сборки sidecar'а (см. opencode_channel).
+    # `prod` — Sudir-логин (профиль/MCP — ИФТ) + cookie-прокси к прод-шлюзу
+    #          (`run.sh prom`, сессия шлюза — из окна Electron).
+    # От режима зависят ТОЛЬКО транспорт к моделям и канал сборки sidecar'а
+    # (см. opencode_channel): профиль, MCP и корп-поиск всегда идут на ИФТ,
+    # как в dev-ветке desktop.
     auth_mode: str = field(default_factory=lambda: _env("GIGATOOL_AUTH_MODE", "ift").strip().lower())
-    # Origin SberFriend API. Единая точка правды для профиля (current/person),
-    # корпоративного поиска и шлюза GigaChat: куки PLATFORM_SESSION host-only,
-    # поэтому Sudir-логин, профиль и API обязаны ходить на ОДИН стенд.
-    # Для `prod` задаётся GIGATOOL_PROD_SHARED_API_URL_ORIGIN (см.
-    # `_shared_api_origin`), для остальных — SHARED_API_URL.
+    # Origin SberFriend API — ВСЕГДА ИФТ (SHARED_API_URL или дефолт стенда).
+    # Единая точка правды для профиля (current/person), корпоративного поиска
+    # и платформенных MCP при любом `auth_mode`: куки PLATFORM_SESSION
+    # host-only, поэтому Sudir-логин, профиль и MCP обязаны ходить на ОДИН
+    # стенд. Прод-origin задаётся отдельно и только для шлюза моделей (см.
+    # `gigachat_upstream`).
     shared_api_origin: Optional[str] = None
 
     # --- Аутентификация сервера (Basic auth) ---
     server_username: str = field(default_factory=lambda: _env("GIGATOOL_SERVER_USERNAME", "opencode"))
     server_password: str = field(default_factory=lambda: _env("GIGATOOL_SERVER_PASSWORD", ""))
 
-    # --- GigaChat upstream ---
+    # --- GigaChat upstream (только транспорт к моделям) ---
     # Новый backend ходит прямо на SberFriend gateway (см.
     # packages/desktop-electron/.env.development.local.example) и авторизуется
     # Sudir-куками.
-    # Origin берётся из shared_api_origin (как SHARED_API_URL_ORIGIN в desktop),
-    # чтобы Sudir-логин (sudir_login) и API-запросы прокси ходили на ОДИН
-    # host: куки PLATFORM_SESSION выдаются host-only, и сессия, полученная
-    # для другого stand'а, на API отвечает 401 -> «Model not found».
-    # Пустая строка означает «вывести из origin» (см. `__post_init__`).
+    # `ift`/`cert` — путь к ИФТ-шлюзу (в `cert` нужен для каталога моделей:
+    # tee берёт `limit`/`modalities` из ИФТ, как `run.sh sert`), `prod` —
+    # прод-стенд из GIGATOOL_PROD_SHARED_API_URL_ORIGIN. Остальные адреса
+    # (профиль/MCP/поиск) остаются на ИФТ.
+    # Пустая строка означает «вывести из auth_mode» (см. `__post_init__`).
     gigachat_upstream: str = field(default_factory=lambda: _env("GIGATOOL_GIGACHAT_UPSTREAM", ""))
-    # Сессионные куки (Sudir) для авторизации к GigaChat gateway. Берутся из
-    # окружения GIGACHAT_SESSION_COOKIES (header-строка `name=value; ...` либо
-    # JSON-объект `{"name": "value"}`) или задаются напрямую в параметре.
+    # IFT-сессия (Sudir): профиль, платформенные MCP, корп-поиск и
+    # `customFetch` sidecar'а. Берётся из GIGACHAT_SESSION_COOKIES
+    # (header-строка `name=value; ...` либо JSON-объект `{"name": "value"}`)
+    # или задаётся напрямую в параметре. От `auth_mode` не зависит.
     session_cookies: dict = field(default_factory=dict)
+    # Сессия ШЛЮЗА МОДЕЛЕЙ (только upstream cookie-прокси). В `ift`/`cert`
+    # пусто -> используется IFT-сессия; в `prod` — прод-куки из окна Electron
+    # (GIGATOOL_PROD_SESSION_COOKIES / файл в log_dir). В env sidecar'а и
+    # MCP-инъекции НЕ попадает.
+    gateway_cookies: dict = field(default_factory=dict)
     # Таймаут на каждый запрос прокси к upstream. Дефолт 300 с, но тяжёлые
     # reasoning-запросы (glm-5.2 сквозь «long»-шлюз) могут не отдавать даже
     # заголовки дольше 300 с (в прогонах наблюдалось ~258 с до первого байта).
@@ -312,11 +361,11 @@ class ClientConfig:
         self.auth_mode = mode
 
         if not self.shared_api_origin:
-            self.shared_api_origin = _shared_api_origin(mode)
+            self.shared_api_origin = _shared_api_origin()
         self.shared_api_origin = self.shared_api_origin.rstrip("/")
 
         if not self.gigachat_upstream:
-            self.gigachat_upstream = _gigachat_upstream(self.shared_api_origin)
+            self.gigachat_upstream = _gigachat_upstream(mode, self.shared_api_origin)
 
         # В режиме `cert` серты по умолчанию — те же, что у `run.sh sert`.
         if self.cert_path is None:
@@ -326,29 +375,12 @@ class ClientConfig:
 
     def resolve(self) -> "ClientConfig":
         """Подставить переменные окружения в пути и настроить дефолты."""
-        session_cookies = self.session_cookies
-        # Новый способ авторизации — Sudir-куки из окружения. Если параметр не
-        # задан, читаем GIGACHAT_SESSION_COOKIES (header-строка или JSON-объект).
-        if not session_cookies:
-            env_cookies = os.environ.get("GIGACHAT_SESSION_COOKIES", "").strip()
-            if env_cookies:
-                import json as _json
-
-                if env_cookies.startswith("{"):
-                    try:
-                        parsed = _json.loads(env_cookies)
-                        if isinstance(parsed, dict):
-                            session_cookies = parsed
-                    except ValueError:
-                        pass
-                else:
-                    # header-строка `name=value; ...` -> dict
-                    session_cookies = {}
-                    for part in env_cookies.split(";"):
-                        part = part.strip()
-                        if "=" in part:
-                            k, _, v = part.partition("=")
-                            session_cookies[k.strip()] = v.strip()
+        # IFT-сессия (профиль/MCP/поиск): если параметр не задан, читаем
+        # GIGACHAT_SESSION_COOKIES (header-строка или JSON-объект).
+        session_cookies = self.session_cookies or _cookies_from_env("GIGACHAT_SESSION_COOKIES")
+        # Сессия шлюза моделей (`prod`): отдельная переменная, чтобы прод-куки
+        # не смешивались с IFT-сессией профиля/MCP.
+        gateway_cookies = self.gateway_cookies or _cookies_from_env("GIGATOOL_PROD_SESSION_COOKIES")
         cfg = ClientConfig(
             repo_root=self.repo_root,
             bun=os.path.expandvars(self.bun),
@@ -361,6 +393,7 @@ class ClientConfig:
             server_password=self.server_password,
             gigachat_upstream=self.gigachat_upstream,
             session_cookies=session_cookies,
+            gateway_cookies=gateway_cookies,
             gigachat_upstream_timeout=self.gigachat_upstream_timeout,
             insecure_tls=self.insecure_tls,
             cert_path=self.cert_path,
@@ -422,6 +455,16 @@ class ClientConfig:
         return Path(__file__).resolve().parent.parent / "server/electron_login.cjs"
 
     # --- Производные адреса SberFriend API (как utils/env.ts в desktop) ---
+    @property
+    def gateway_origin(self) -> str:
+        """Origin шлюза моделей — только для session-check его сессии.
+
+        В `prod` это прод-стенд (не `shared_api_origin`): куки шлюза проверяем
+        на том же host, где они выданы, иначе 302/401 на чужом стенде.
+        """
+        parts = urlsplit(self.gigachat_upstream)
+        return f"{parts.scheme}://{parts.netloc}" if parts.scheme else self.shared_api_origin
+
     @property
     def current_person_url(self) -> str:
         """GET «кто я» — источник табельного номера (CURRENT_PERSON_URL)."""

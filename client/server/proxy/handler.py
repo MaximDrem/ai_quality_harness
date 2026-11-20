@@ -25,6 +25,7 @@ from .tracing import (
     RESP_SNIPPET_BYTES,
     apply_response_trace,
     build_request_trace,
+    dump_request_body,
     finish_trace,
 )
 
@@ -203,6 +204,11 @@ class GigaChatHandler(http.server.BaseHTTPRequestHandler):
                 body = None
 
         rec = build_request_trace(method, local_path, target, body)
+        dump_dir = self._proxy.dump_dir
+        if dump_dir is not None:
+            dumped = dump_request_body(dump_dir, body)
+            if dumped:
+                rec["dump"] = dumped
         t0 = time.time()
 
         hdrs = self._forward_headers(request_headers, body)

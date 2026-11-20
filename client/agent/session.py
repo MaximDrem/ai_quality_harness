@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from ..core.config import ClientConfig
 from ..core.errors import AgentError, SessionError
@@ -25,6 +25,13 @@ from .result import AgentResult
 
 # Как часто перепроверять наличие файла-артефакта на диске (сек).
 _ARTIFACT_POLL_INTERVAL = 0.5
+
+# Сколько ждать подключения платформенных MCP (corpsearch) перед первым
+# промтом: без этого промт собирается до `connected`, как при холодном старте.
+_SYSTEM_MCP_TIMEOUT = 45.0
+
+# Статусы, после которых попытка подключения уже не изменится сама.
+_MCP_TERMINAL = ("connected", "failed", "needs_auth", "needs_client_registration")
 
 
 def _ensure_dir(path: Union[str, Path]) -> Path:
@@ -122,7 +129,35 @@ class AgentSession:
 
     def create_session(self, title: Optional[str] = None) -> str:
         self.session_id = self._client().create_session(title=title or self.title)
+        self.wait_for_system_mcp()
         return self.session_id
+
+    def wait_for_system_mcp(self, timeout: float = _SYSTEM_MCP_TIMEOUT) -> Dict[str, Any]:
+        """Дождаться подключения платформенных MCP до первого промта.
+
+        В desktop первый запрос уходит уже после того, как corpsearch получил
+        статус `connected`, — только тогда промт собирается с
+        `<mcp-routing-guidance>` и `lazy_search_tool` вместо встроенного
+        `corp_search`. Здесь ждём тот же терминальный статус; неудача
+        (`failed`/`needs_auth`) тоже терминальна, как в desktop.
+        """
+        names = self.instance.enabled_system_mcp() if self.instance else ()
+        if not names:
+            return {}
+        deadline = time.monotonic() + timeout
+        status: Dict[str, Any] = {}
+        while True:
+            try:
+                status = self._client().http.get("/mcp") or {}
+            except Exception:  # noqa: BLE001 — статус не критичен для хода
+                status = {}
+            # `disabled` — это ещё не вердикт: connect стартует лениво и
+            # статус меняется после завершения попытки (см. reconcileSystemServers).
+            if all((status.get(name) or {}).get("status") in _MCP_TERMINAL for name in names):
+                return status
+            if time.monotonic() >= deadline:
+                return status
+            time.sleep(0.25)
 
     def on_event(self, handler: Callable[[AgentEvent], None]) -> None:
         self._client().on_event(handler)

@@ -21,7 +21,7 @@ from tqdm import tqdm
 from .agent.cookies import refresh_cookies
 from .agent.session import run_case
 from .cases import DEFAULT_SCENARIO, available_scenarios, load_test_cases, makedirs
-from .config import RUNS_DIR, SEMAPHORE_LIMIT, WORK_DIRS_DIR, load_dotenv
+from .config import RUNS_DIR, SEMAPHORE_LIMIT, load_dotenv
 from .evaluate import case_for_validate, list_models, validate_artifact, with_universal_checks
 from .models import RunResult
 from .report import write_results_xlsx
@@ -33,7 +33,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--id", default=None, help="фильтр по id кейса")
     parser.add_argument("--scenario", default=None, help=f"сценарий из example/data (по умолчанию {DEFAULT_SCENARIO})")
     parser.add_argument("--list-scenarios", action="store_true", help="показать автоматически найденные сценарии")
-    parser.add_argument("--model", default=None, help="модель OpenCode provider/model")
+    parser.add_argument("--model", default=None,
+                        help="модель OpenCode: provider/model или имя модели (провайдер подставится сам)")
     parser.add_argument("--auth-mode", choices=("ift", "prod", "cert"), default=None)
     parser.add_argument("--skills-dir", default=None, help="OPENCODE_CONFIG_DIR с skills/, agent/ и настройками")
     parser.add_argument("--list-models", action="store_true", help="показать доступные модели и выйти")
@@ -91,6 +92,21 @@ async def _validate_mode(args: argparse.Namespace, runs_root: Path) -> int:
     return 0 if not failed else 1
 
 
+def _case_scenarios(case_id: str, skip: Optional[str] = None) -> List[str]:
+    """Сценарии, в которых есть кейс с таким id (для подсказки при пустом фильтре)."""
+    hits: List[str] = []
+    for name in available_scenarios():
+        if name == skip:
+            continue
+        try:
+            ids = {case.id for case in load_test_cases(scenario=name)}
+        except Exception:
+            continue
+        if case_id in ids:
+            hits.append(name)
+    return hits
+
+
 async def _full_run_mode(args: argparse.Namespace, runs_root: Path) -> int:
     cases = load_test_cases(scenario=args.scenario)
     if args.id:
@@ -98,11 +114,30 @@ async def _full_run_mode(args: argparse.Namespace, runs_root: Path) -> int:
     cases = [with_universal_checks(case) for case in cases]
     if not cases:
         print("нет тест-кейсов для запуска", file=sys.stderr)
+        if args.id:
+            hits = _case_scenarios(args.id, skip=args.scenario or DEFAULT_SCENARIO)
+            if hits:
+                print(
+                    f"  кейс {args.id} есть в сценарии {', '.join(hits)}: "
+                    f"добавьте --scenario {hits[0]}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"  кейс {args.id} не найден; сценарии: {', '.join(available_scenarios())}",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                f"  сценарий {args.scenario or DEFAULT_SCENARIO} пуст; "
+                f"сценарии: {', '.join(available_scenarios())}",
+                file=sys.stderr,
+            )
         return 1
     if args.model:
         print(f"[run] model={args.model}")
 
-    makedirs(runs_root, WORK_DIRS_DIR)
+    makedirs(runs_root)
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
     results: List[RunResult] = []
     total_work = len(cases) * max(1, args.runs)
