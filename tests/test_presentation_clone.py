@@ -36,14 +36,24 @@ M5_HANDLERS = (
 )
 TEMPLATE_MEDIA_HANDLER = "pptx/raw_structure/template_media"
 CASE_COUNTS = {
-    "US01-01-01": 54,
-    "US01-01-02": 56,
+    "US01-01-01": 55,
+    "US01-01-02": 57,
     "US01-01-03": 58,
-    "US01-01-04": 55,
+    "US01-01-04": 56,
     "US01-01-05": 56,
-    "US01-01-06": 55,
-    "US01-01-07": 61,
-    "US01-01-08": 55,
+    "US01-01-06": 56,
+    "US01-01-07": 57,
+    "US01-01-08": 57,
+}
+INSTRUCTION_COUNTS = {
+    "US01-01-01": 4,
+    "US01-01-02": 5,
+    "US01-01-03": 7,
+    "US01-01-04": 5,
+    "US01-01-05": 5,
+    "US01-01-06": 5,
+    "US01-01-07": 6,
+    "US01-01-08": 5,
 }
 CASE_ASSETS = {
     "US01-01-01": "AI_Technology_Slidesgo_onestyle.pptx",
@@ -117,6 +127,11 @@ class PresentationCloneTests(unittest.TestCase):
                 }
                 for metric, expected in metric_counts.items():
                     self.assertEqual(sum(check.metric == metric for check in functions), expected)
+                instruction_checks = [check for check in checks if check.metric == "Следование инструкции"]
+                self.assertEqual(len(instruction_checks), INSTRUCTION_COUNTS[case.id])
+                self.assertTrue(
+                    all(check.use_user_phrase for check in instruction_checks if check.kind == "llm")
+                )
                 m5_checks = [check for check in functions if check.metric == "M5. Чистота от шаблона"]
                 self.assertCountEqual([check.handler for check in m5_checks], M5_HANDLERS)
                 for check in m5_checks:
