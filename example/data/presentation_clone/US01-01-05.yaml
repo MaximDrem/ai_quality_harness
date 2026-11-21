@@ -1,0 +1,129 @@
+id: US01-01-05
+user_phrase: |-
+  Сделай презентацию-приглашение на 6 слайдов по приложенному шаблону. Приглашаем сотрудников на внутренний хакатон «AI Challenge 2027»,
+  который пройдёт 14–15 марта 2027 года. Тема: идеи по использованию ИИ в работе. Регистрация до 1 марта, команды 3–5 человек, участие
+  онлайн или офлайн. Тон неформальный, обращение на «ты». Контакты, призы и имена организаторов не выдумывай.
+skill: presentation
+metric_groups:
+  - presentations/sanity
+  - presentations/readability
+  - presentations/layout
+  - presentations/style
+  - presentations/beauty
+  - presentations/text
+  - presentations/content_language
+  - presentation_clone/template_selection
+  - presentation_clone/template_fidelity
+attachments:
+  - name: template
+    path: assets/Remote_Working_Slidesgo_onestyle.pptx
+artifacts:
+  - name: style_reference
+    type: .md
+    path: STYLE.md
+  - name: presentation
+    is_final_result: true
+    type: .pptx
+checks:
+  - kind: function
+    metric: Следование инструкции
+    user_phrase: false
+    handler: pptx/raw_structure/slide_count
+    options:
+      condition: 6
+    text: slide_count 6
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: событие и его тему. ИГНОРИРУЙ: оформление. Вопрос: это приглашение сотрудников на внутренний хакатон «AI Challenge 2027» с темой идей по использованию ИИ в работе?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: даты. ИГНОРИРУЙ: остальные условия и оформление. Вопрос: указаны проведение 14–15 марта 2027 года и регистрация до 1 марта без противоречащих дат?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: формат участия. ИГНОРИРУЙ: остальные условия и оформление. Вопрос: указаны команды от 3 до 5 человек и возможность участия как онлайн, так и офлайн?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: отсутствие выдуманных контактов, призов и имён организаторов. ИГНОРИРУЙ: название хакатона и заданные факты. Вопрос: такие несогласованные сведения отсутствуют?
+  - kind: llm
+    input: text
+    metric: Контент и язык
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: тон приглашения. ИГНОРИРУЙ: дизайн. Вопрос: текст неформальный, дружелюбный и последовательно обращается к сотруднику на «ты»?
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_slide_text
+    artifacts: [presentation]
+    options:
+      terms:
+        - Slidesgo
+        - CREDITS
+        - Instructions for use
+        - CONTENTS OF THIS TEMPLATE
+        - Here is where your presentation begins
+        - You can describe the topic of the section here
+        - Remote Working
+        - Who A
+        - Who B
+        - Who C
+        - AWESOME WORDS
+        - SOMEONE FAMOUS
+        - PROJECT INTRODUCTION
+        - MAJOR REQUIREMENT
+        - MAJOR FUNDING
+        - THE CONCLUSION
+        - THE BIBLIOGRAPHY
+        - DESKTOP MOCKUP
+        - TABLET MOCKUP
+        - MOBILE MOCKUP
+        - SNEAK PEEK
+        - Jenna Doe
+        - Juliana Silva
+        - Neil Tran
+        - Josep Garcia
+        - Lana Petrov
+        - Andrea Smith
+        - Samira Hadid
+        - John James
+        - Jenna Smith
+        - Please keep this slide for attribution
+        - You can replace the image on the screen
+        - Insert your multimedia content
+        - This is a quote
+        - You can enter a subtitle
+        - YOUR LOGO
+      patterns:
+        - '(?i)\b(?:Mercury|Venus|Mars|Jupiter|Saturn|Neptune)\b'
+        - '(?i)\bHere you could\b'
+        - '(?i)\bFor more info about\b'
+        - '(?i)\bYou can describe\b'
+        - '(?i)\bYou can give a brief description\b'
+        - '(?i)5,000,000|9h 55m 23\s*s|333,000|386,000\s*km|\$300M|\$600M|\$100M|\b20XX\b'
+        - '(?i)yourwebsite\.com|youremail@freepik\.com|\+91 620 421 838'
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_metadata
+    artifacts: [presentation]
+    options:
+      terms: [Slidesgo, Freepik, CREDITS, yourwebsite.com, youremail@freepik.com]
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_links
+    artifacts: [presentation]
+    options:
+      terms: [slidesgo.com, freepik.com, bit.ly, docs.google.com]

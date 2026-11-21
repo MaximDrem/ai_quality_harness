@@ -1,0 +1,134 @@
+id: US01-01-08
+user_phrase: |-
+  Сделай презентацию на 6 слайдов по приложенному шаблону. Это памятка для новичка: что нужно знать в первый рабочий день, как
+  устроена работа с наставником, как проходит обучение, к кому обращаться за помощью. Картинки бери только из шаблона, свои не
+  добавляй, из интернета ничего не скачивай, эмодзи не используй.
+skill: presentation
+metric_groups:
+  - presentations/sanity
+  - presentations/readability
+  - presentations/layout
+  - presentations/style
+  - presentations/beauty
+  - presentations/text
+  - presentations/content_language
+  - presentation_clone/template_selection
+  - presentation_clone/template_fidelity
+attachments:
+  - name: template
+    path: assets/Северный_ветер.pptx
+artifacts:
+  - name: style_reference
+    type: .md
+    path: STYLE.md
+  - name: presentation
+    is_final_result: true
+    type: .pptx
+checks:
+  - kind: function
+    metric: Следование инструкции
+    user_phrase: false
+    handler: pptx/raw_structure/slide_count
+    options:
+      condition: 6
+    text: slide_count 6
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: наличие четырёх обязательных тем: первый рабочий день, работа с наставником, обучение и к кому обращаться за помощью. ИГНОРИРУЙ: оформление. Вопрос: все четыре темы раскрыты в презентации?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: практическую полезность памятки для новичка. ИГНОРИРУЙ: оформление. Вопрос: презентация содержит конкретные ориентиры и действия, которые помогают новичку в первый рабочий день?
+  - kind: llm
+    input: text
+    metric: Контент и язык
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: язык памятки. ИГНОРИРУЙ: дизайн. Вопрос: текст написан на понятном русском языке, дружелюбно и без излишне сложных терминов?
+  - kind: function
+    metric: M3. Сохранение оформления шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/template_media
+    artifacts: [template, presentation]
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_slide_text
+    artifacts: [presentation]
+    options:
+      terms:
+        - Название презентации
+        - 'Подзаголовок: о чём эта презентация'
+        - Имя Фамилия
+        - Москва, 2026
+        - Название первого раздела
+        - Название второго раздела
+        - Название третьего раздела
+        - Название раздела
+        - Коротко опишите, о чём этот раздел
+        - Заголовок слайда с текстом
+        - Основная мысль слайда
+        - Пример текста второго уровня
+        - 'Второй пункт: не больше двух строк'
+        - Третий пункт с коротким пояснением
+        - Заголовок рядом с изображением
+        - Опишите, что показано на изображении
+        - Добавьте два-три поясняющих пункта
+        - Каждый пункт — одна мысль
+        - Изображение замените своим
+        - Первое направление
+        - Второе направление
+        - Третье направление
+        - Короткое описание направления
+        - Заголовок первого блока
+        - Заголовок второго блока
+        - Первый пункт блока
+        - Второй пункт блока
+        - Преимущества варианта А
+        - Недостатки варианта А
+        - Преимущества варианта Б
+        - Недостатки варианта Б
+        - Пояснение к цифре
+        - Пример таблицы
+        - Удалите этот слайд перед показом презентации
+        - Выручка, млн ₽
+        - Клиенты, тыс.
+        - Средний чек, ₽
+        - Что будет сделано на этом этапе
+        - Пример диаграммы
+        - Рост показателя А по кварталам
+        - Показатель А
+        - Показатель Б
+        - 'Источник: данные компании'
+        - Заголовок к большому изображению
+        - Подпись к изображению, при необходимости — источник
+        - name@severveter.ru
+        - +7 000 000-00-00
+      patterns:
+        - '(?i)(?<!\d)85%|3x|\+29%|(?<!\d)120(?!\d)'
+        - '(?i)\b(?:2024|2025|2026)\b'
+        - '[\U0001F300-\U0001FAFF\U00002600-\U000027BF]'
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_metadata
+    artifacts: [presentation]
+    options:
+      terms:
+        - 'Шаблон «Северный ветер»'
+        - generated using python-pptx
+        - Steve Canny
+        - Имя Фамилия
+        - name@severveter.ru
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_links
+    artifacts: [presentation]
+    options:
+      terms: [severveter.ru]

@@ -82,13 +82,14 @@ checks:
 
 ## Сценарий presentation_clone
 
-Сценарий проверяет создание презентации по шаблону пользователя. Текущие кейсы — `US01-01-01…03` на шаблоне AI Technology; остальные кейсы добавляются после появления недостающих шаблонов.
+Сценарий проверяет создание презентации по шаблону пользователя. Кейсы `US01-01-01…08` используют три приложенных шаблона: AI Technology (`01…03`), Remote Working (`04…06`) и «Северный ветер» (`07…08`).
 
-Кейс объявляет вложение `template`, вспомогательный `style_reference` (`STYLE.md` на любом уровне `work_dir`) и финальный `presentation`. Метрики задаются наборами независимых функциональных проверок:
+Кейс объявляет вложение `template`, вспомогательный `style_reference` (`STYLE.md` на любом уровне `work_dir`) и финальный `presentation`. Общие группы `presentations/*` дополняются индивидуальными проверками `slide_count`, структуры, обязательных фактов, ограничений содержания и языка по образцу GD-кейсов.
 
 - M1 — `text/template_style_header` проверяет формат заголовка `STYLE.md`, `text/template_style_reference` сверяет имя шаблона с вложением;
 - M3 — `pptx/raw_structure/template_slide_size`, `template_master_theme`, `template_layouts`, `template_used_layouts`, `template_fonts` и `template_text_colors` отдельно проверяют размер, master/theme, наборы и использование layouts, шрифты и цвета текста;
-- M5 — `pptx/raw_structure/forbidden_slide_text`, `forbidden_metadata` и `forbidden_links` отдельно сканируют слайды/заметки, метаданные и видимые ссылки на запрещённые фразы/паттерны из YAML.
+- M3 для `US01-01-08` — `template_media` сравнивает SHA-256 всех файлов `ppt/media/*` финала с медиа шаблона и отклоняет любые посторонние изображения;
+- M5 — `pptx/raw_structure/forbidden_slide_text`, `forbidden_metadata` и `forbidden_links` заданы индивидуально в YAML каждого кейса и сканируют слайды/заметки, метаданные и видимые ссылки на специфичные для шаблона запрещённые фразы/паттерны.
 
 ## Профиль judge
 

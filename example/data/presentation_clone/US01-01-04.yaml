@@ -1,0 +1,124 @@
+id: US01-01-04
+user_phrase: |-
+  Сделай презентацию на 9 слайдов по приложенному шаблону. Это план обучения сотрудников на следующий квартал. Структура:
+  титульный, содержание, затем три раздела: «Искусственный интеллект: базовый курс», «Soft skills для клиентской работы», «Наставничество
+  и обмен опытом». У каждого раздела слайд-разделитель и слайд с 2–3 конкретными целями обучения. Финальный слайд — итоговый.
+  Бюджет пока не согласован, суммы не включай.
+skill: presentation
+metric_groups:
+  - presentations/sanity
+  - presentations/readability
+  - presentations/layout
+  - presentations/style
+  - presentations/beauty
+  - presentations/text
+  - presentations/content_language
+  - presentation_clone/template_selection
+  - presentation_clone/template_fidelity
+attachments:
+  - name: template
+    path: assets/Remote_Working_Slidesgo_onestyle.pptx
+artifacts:
+  - name: style_reference
+    type: .md
+    path: STYLE.md
+  - name: presentation
+    is_final_result: true
+    type: .pptx
+checks:
+  - kind: function
+    metric: Следование инструкции
+    user_phrase: false
+    handler: pptx/raw_structure/slide_count
+    options:
+      condition: 9
+    text: slide_count 9
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: структуру из 9 слайдов: титульный, содержание, для каждого из трёх разделов отдельный разделитель и отдельный слайд целей, затем итоговый слайд. Разделы: «Искусственный интеллект: базовый курс», «Soft skills для клиентской работы», «Наставничество и обмен опытом». ИГНОРИРУЙ: оформление. Вопрос: структура и порядок полностью соблюдены, лишних разделов нет?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: цели обучения в каждом из трёх разделов. ИГНОРИРУЙ: оформление и другие слайды. Вопрос: на смысловом слайде каждого раздела есть от 2 до 3 конкретных целей обучения?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: отсутствие бюджета. ИГНОРИРУЙ: остальные числа и оформление. Вопрос: в презентации отсутствуют любые бюджетные суммы и стоимость обучения?
+  - kind: llm
+    input: text
+    metric: Контент и язык
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: язык внутреннего плана обучения сотрудников на следующий квартал. ИГНОРИРУЙ: дизайн. Вопрос: текст деловой, понятный и содержит конкретные формулировки без неопределённых общих фраз?
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_slide_text
+    artifacts: [presentation]
+    options:
+      terms:
+        - Slidesgo
+        - CREDITS
+        - Instructions for use
+        - CONTENTS OF THIS TEMPLATE
+        - Here is where your presentation begins
+        - You can describe the topic of the section here
+        - Remote Working
+        - Who A
+        - Who B
+        - Who C
+        - AWESOME WORDS
+        - SOMEONE FAMOUS
+        - PROJECT INTRODUCTION
+        - MAJOR REQUIREMENT
+        - MAJOR FUNDING
+        - THE CONCLUSION
+        - THE BIBLIOGRAPHY
+        - DESKTOP MOCKUP
+        - TABLET MOCKUP
+        - MOBILE MOCKUP
+        - SNEAK PEEK
+        - Jenna Doe
+        - Juliana Silva
+        - Neil Tran
+        - Josep Garcia
+        - Lana Petrov
+        - Andrea Smith
+        - Samira Hadid
+        - John James
+        - Jenna Smith
+        - Please keep this slide for attribution
+        - You can replace the image on the screen
+        - Insert your multimedia content
+        - This is a quote
+        - You can enter a subtitle
+        - YOUR LOGO
+      patterns:
+        - '(?i)\b(?:Mercury|Venus|Mars|Jupiter|Saturn|Neptune)\b'
+        - '(?i)\bHere you could\b'
+        - '(?i)\bFor more info about\b'
+        - '(?i)\bYou can describe\b'
+        - '(?i)\bYou can give a brief description\b'
+        - '(?i)5,000,000|9h 55m 23\s*s|333,000|386,000\s*km|\$300M|\$600M|\$100M|\b20XX\b'
+        - '(?i)yourwebsite\.com|youremail@freepik\.com|\+91 620 421 838'
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_metadata
+    artifacts: [presentation]
+    options:
+      terms: [Slidesgo, Freepik, CREDITS, yourwebsite.com, youremail@freepik.com]
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_links
+    artifacts: [presentation]
+    options:
+      terms: [slidesgo.com, freepik.com, bit.ly, docs.google.com]

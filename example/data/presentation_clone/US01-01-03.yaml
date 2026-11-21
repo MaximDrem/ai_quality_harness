@@ -1,10 +1,9 @@
 id: US01-01-03
 user_phrase: |-
-  Сделай по нашему шаблону отчёт для руководства на 6 слайдов о пилоте чат-бота в колл-центре.
-  Данные: 120 000 обращений в месяц, бот закрывает 38% обращений без оператора (план был 30%),
-  среднее время ответа сократилось с 4,5 до 1,2 минуты, оценка клиентов 4,6 из 5. После
-  титульного: цели пилота, результаты, сравнение с планом, риски, решение о масштабировании.
-  Других цифр не добавляй.
+  Сделай отчёт для руководства на 6 слайдов по приложенному шаблону. Структура: титульный, цели пилота, результаты, сравнение с планом,
+  риски, решение о масштабировании. Факты: пилот ИИ-ассистента в контакт-центре, 120 000 обращений/мес. Результаты: точность ответов
+  38% при плане 30%, среднее время ответа сократилось с 4,5 до 1,2 минуты, удовлетворённость операторов 4,6/5. Других цифр не
+  добавляй.
 skill: presentation
 metric_groups:
   - presentations/sanity
@@ -16,10 +15,9 @@ metric_groups:
   - presentations/content_language
   - presentation_clone/template_selection
   - presentation_clone/template_fidelity
-  - presentation_clone/template_cleanup_ai
 attachments:
   - name: template
-    path: assets/AI_Technology_Slidesgo.pptx
+    path: assets/AI_Technology_Slidesgo_onestyle.pptx
 artifacts:
   - name: style_reference
     type: .md
@@ -27,3 +25,125 @@ artifacts:
   - name: presentation
     is_final_result: true
     type: .pptx
+checks:
+  - kind: function
+    metric: Следование инструкции
+    user_phrase: false
+    handler: pptx/raw_structure/slide_count
+    options:
+      condition: 6
+    text: slide_count 6
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: структуру и порядок: титульный, цели пилота, результаты, сравнение с планом, риски, решение о масштабировании. ИГНОРИРУЙ: оформление. Вопрос: все шесть разделов присутствуют именно в указанном порядке, без лишних разделов?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: масштаб пилота. ИГНОРИРУЙ: другие факты и оформление. Вопрос: указано, что пилот ИИ-ассистента в контакт-центре охватывает 120 000 обращений в месяц?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: точность ответов и плановое значение. ИГНОРИРУЙ: остальные показатели. Вопрос: указана точность 38% и явно сопоставлена с планом 30%?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: изменение среднего времени ответа. ИГНОРИРУЙ: остальные показатели. Вопрос: указано сокращение именно с 4,5 до 1,2 минуты?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: удовлетворённость операторов. ИГНОРИРУЙ: остальные показатели. Вопрос: указана оценка именно 4,6/5?
+  - kind: llm
+    input: text
+    metric: Следование инструкции
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: отсутствие любых количественных данных, кроме 120 000 обращений/мес., 38%, плана 30%, 4,5 и 1,2 минуты, 4,6/5 и нумерации слайдов. ИГНОРИРУЙ: оформление. Вопрос: другие выдуманные цифры отсутствуют?
+  - kind: llm
+    input: text
+    metric: Контент и язык
+    user_phrase: false
+    text: |-
+      ОЦЕНИВАЙ ТОЛЬКО: деловой стиль отчёта для руководства. ИГНОРИРУЙ: дизайн. Вопрос: текст лаконичный, деловой и сформулирован на уровне управленческого отчёта?
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_slide_text
+    artifacts: [presentation]
+    options:
+      terms:
+        - Slidesgo
+        - CREDITS
+        - Instructions for use
+        - CONTENTS OF THIS TEMPLATE
+        - Here is where your presentation begins
+        - You can describe the topic of the section here
+        - ARTIFICIAL INTELLIGENCE (AI)
+        - PROJECT PROPOSAL
+        - TABLE OF CONTENTS
+        - OUR COMPANY
+        - WHAT ARE WE WORKING ON?
+        - AWESOME WORDS
+        - SOMEONE FAMOUS
+        - OUR ASPIRATIONS
+        - MAYOR REQUIREMENTS
+        - PREDICTED RESULTS
+        - AI IN A NUTSHELL
+        - DESKTOP MOCKUP
+        - SNEAK PEEK
+        - OUR PARTNERS
+        - OUR LOCATION
+        - OUR TEAM
+        - Jenna Doe
+        - Juliana Silva
+        - Neil Tran
+        - Josep Garcia
+        - Lana Petrov
+        - Andrea Smith
+        - Samira Hadid
+        - John James
+        - Jenna Smith
+        - Please keep this slide for attribution
+        - ALTERNATIVE RESOURCES
+        - RESOURCES
+        - Did you like the resources on this template
+        - assortment of alternative resources
+        - You can replace the image on the screen
+        - Insert your multimedia content
+        - This is a quote
+        - You can enter a subtitle
+        - YOUR LOGO
+        - ICON PACK
+      patterns:
+        - '(?i)\b(?:Mercury|Venus|Mars|Jupiter|Saturn|Neptune)\b'
+        - '(?i)\bHere you could\b'
+        - '(?i)\bFor more info about\b'
+        - '(?i)\bYou can talk about\b'
+        - '(?i)\bYou can give a brief description\b'
+        - '(?i)\bYou can list your (?:objectives|company values)\b'
+        - '(?i)5,000,000|9h 55m 23\s*s|333,000|386,000\s*km|\$10,000,000|\$30,000|\b20XX\b'
+        - '(?i)yourwebsite\.com|youremail@freepik\.com|\+91 620 421 838'
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_metadata
+    artifacts: [presentation]
+    options:
+      terms: [Slidesgo, Freepik, Flaticon, Storyset, Wepik, Videvo, CREDITS, yourwebsite.com, youremail@freepik.com]
+  - kind: function
+    metric: M5. Чистота от шаблона
+    user_phrase: false
+    handler: pptx/raw_structure/forbidden_links
+    artifacts: [presentation]
+    options:
+      terms: [slidesgo.com, freepik.com, flaticon.com, storyset.com, wepik.com, videvo.net, bit.ly, docs.google.com]
